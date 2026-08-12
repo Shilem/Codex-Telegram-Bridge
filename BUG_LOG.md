@@ -52,6 +52,12 @@
 - 修复：签名 tarball 显式注入 shrinkwrap；版本目录通过原子 current 指针切换；更新交给 systemd/launchd/Task Scheduler 独立任务；迁移精确备份和回写 offset，失败闭合；CI action 固定完整 SHA。
 - 验证：Unix 安装、1.0→1.1、回滚和 shell 语法测试通过；三平台真实服务验收保留为发布门禁。
 
+### 首次三平台 CI 的发布检查失败
+
+- 根因：Unix 权限测试用 BSD `stat -f` 与 GNU `stat -c` 的短路组合，GNU `stat -f` 会成功返回文件系统信息而不会进入备用命令；同时 `tsx` 固定的旧 esbuild 与 Vitest/Vite 新版本约束冲突，导致 `npm sbom` 把依赖树判为 invalid。
+- 修复：权限检查按 `uname` 明确选择 stat 方言；移除仅用于便捷开发命令的 `tsx`，开发脚本改为先编译再运行，重新生成 shrinkwrap。
+- 验证：本机 Node 24 完整检查、Unix 发布测试和 `npm sbom --sbom-format cyclonedx` 通过；修复推送后重新等待三平台 CI。
+
 ## 0.9 旧版历史（已由 1.0 后端移除）
 
 ### 已解决

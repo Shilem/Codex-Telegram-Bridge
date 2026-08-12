@@ -45,7 +45,12 @@ CTB_SKIP_DEPENDENCIES=1 CTB_SKIP_SERVICE=1 "$ROOT/scripts/install.sh"
 [ "$(cat "$TMP/install/current/VERSION")" = 1.0.0 ] || fail "current 版本错误"
 assert_file "$TMP/config/config.json"
 assert_file "$TMP/config/bot-token"
-[ "$(stat -f '%Lp' "$TMP/config/bot-token" 2>/dev/null || stat -c '%a' "$TMP/config/bot-token")" = 600 ] || fail "Token 权限不是 600"
+if [ "$(uname -s)" = Darwin ]; then
+  TOKEN_MODE=$(stat -f '%Lp' "$TMP/config/bot-token")
+else
+  TOKEN_MODE=$(stat -c '%a' "$TMP/config/bot-token")
+fi
+[ "$TOKEN_MODE" = 600 ] || fail "Token 权限不是 600"
 assert_contains "$TMP/config/config.json" '"allowDangerFullAccess": false'
 
 mkdir -p "$TMP/release/dist"

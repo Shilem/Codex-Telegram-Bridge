@@ -26,7 +26,7 @@
     "test:watch": "vitest",
     "check": "npm run typecheck && npm run lint && npm test && npm run build",
     "start": "node dist/service.js",
-    "dev": "tsx src/service.ts"
+    "dev": "npm run build && node dist/service.js"
   },
   "dependencies": {
     "better-sqlite3": "13.0.1",
@@ -43,7 +43,6 @@
     "@typescript-eslint/eslint-plugin": "8.46.2",
     "@typescript-eslint/parser": "8.46.2",
     "eslint": "9.39.1",
-    "tsx": "4.20.6",
     "typescript": "5.9.3",
     "typescript-eslint": "8.46.2",
     "vitest": "4.1.10"
