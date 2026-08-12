@@ -94,6 +94,12 @@
 - 修复：模型状态组件跟踪最后一次成功 `model/list` 和最近一次刷新告警；`/health` 明确显示目录可用但刷新有告警。任务启动日志与进度卡记录最终模型、推理强度、服务档位及项目/本机来源。
 - 验证：单元测试覆盖本机配置、隐藏模型过滤、动态 Fast 档位和刷新告警；本机服务日志应出现模型目录读取成功，并在上游超时时保留结构化告警。
 
+### PR 的 Gitleaks 门禁因 GitHub 权限不足失败
+
+- 根因：CI 将全局权限限制为 `contents: read`，但 Gitleaks 在 `pull_request` 事件中需要读取 PR 提交列表；GitHub API 返回 `403 Resource not accessible by integration`，并非扫描发现秘密。
+- 修复：只增加 Gitleaks 所需的 `pull-requests: read`，保持其余默认写权限关闭。
+- 验证：PR CI 的 secret-scan 必须成功；三平台构建、App Server 合约和 SBOM 门禁继续保持通过。
+
 ### Telegram 同时保留任务正文与重复的最终结果
 
 - 根因：任务排队消息被复用为流式进度卡片并写入完整回复，但 `turn/completed` 又单独发送最终结果；完成时只清理内存映射，没有更新或删除原进度消息。
