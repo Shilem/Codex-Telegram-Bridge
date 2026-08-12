@@ -15,6 +15,7 @@ LOG_DIR="$HOME/Library/Logs/codex-telegram-bridge"
 command -v python3 >/dev/null || { echo '需要 Python 3。' >&2; exit 1; }
 command -v tmux >/dev/null || { echo '需要 tmux。' >&2; exit 1; }
 command -v codex >/dev/null || { echo '需要已安装并登录的 Codex CLI。' >&2; exit 1; }
+SERVICE_PATH="$(dirname "$(command -v python3)"):$(dirname "$(command -v tmux)"):$(dirname "$(command -v codex)"):/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 case "$(uname -s)" in
   Linux) PLATFORM=linux ;;
@@ -40,6 +41,7 @@ fi
 cat > "$RUNNER" <<RUNNER
 #!/usr/bin/env bash
 set -euo pipefail
+export PATH="$SERVICE_PATH"
 ENV_FILE="$CONFIG_FILE"
 [ -f "\$ENV_FILE" ] || { echo "配置文件不存在：\$ENV_FILE" >&2; exit 2; }
 set -a

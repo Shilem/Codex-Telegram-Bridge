@@ -5918,6 +5918,7 @@ class Bridge:
         self.session_pos = identity.size
 
     def jsonl_loop(self) -> None:
+        next_session_wait_log = 0.0
         while not self.stop_event.is_set():
             try:
                 path = self.ensure_session_file()
@@ -5933,6 +5934,14 @@ class Bridge:
                             self.session_pos = line_start
                             break
                         self.session_pos = line_end
+            except RuntimeError as exc:
+                if str(exc) == "could not find active Codex TUI session JSONL":
+                    now = time.monotonic()
+                    if now >= next_session_wait_log:
+                        log("JSONL", "waiting for Codex session JSONL; retrying in background")
+                        next_session_wait_log = now + 30
+                else:
+                    log("JSONL", f"watch error: {exc}")
             except Exception as exc:  # noqa: BLE001
                 if not (
                     not getattr(self.repl, "supports_pane_features", True)
@@ -7991,7 +8000,12 @@ class Bridge:
             log("TG", "command menu registration failed")
         self.repl.verify()
         if getattr(self.repl, "supports_pane_features", True):
-            self.ensure_session_file()
+            try:
+                self.ensure_session_file()
+            except RuntimeError as exc:
+                if str(exc) != "could not find active Codex TUI session JSONL":
+                    raise
+                log("REPL", "startup waiting for Codex session JSONL; it will bind after the first TUI turn")
         self.acquire_lock()
         jsonl_thread = threading.Thread(target=self.jsonl_loop, daemon=True)
         jsonl_thread.start()
