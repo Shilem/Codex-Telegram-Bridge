@@ -234,8 +234,16 @@ export class TelegramController {
       }
       case "new": {
         const projectId = this.#activeProjectId();
+        const project = this.projects.require(projectId);
+        const local = await this.models.localState(project.normalizedRoot);
+        const effectiveModel = project.defaultModel ?? local.model ?? "未设置";
+        const effectiveEffort = project.reasoningEffort ?? local.reasoningEffort ?? "模型默认";
+        const effectiveTier = project.serviceTier ?? local.serviceTier ?? "default";
         this.database.connection.prepare("UPDATE threads SET closed_at = ?, updated_at = ? WHERE project_id = ? AND closed_at IS NULL").run(Date.now(), Date.now(), projectId);
-        await this.api.sendMessage(message.chat.id, "当前项目将在下一条任务创建新会话。");
+        await this.api.sendMessage(
+          message.chat.id,
+          `<b>新对话配置</b>\n项目：${escapeHtml(project.name)}\n模型：<code>${escapeHtml(effectiveModel)}</code>\n思考深度：<code>${escapeHtml(effectiveEffort)}</code>\nFast：${effectiveTier === "default" ? "关闭" : `开启（<code>${escapeHtml(effectiveTier)}</code>）`}\n\n下一条消息将创建新对话。`,
+        );
         return "new_session";
       }
       case "sessions":
@@ -349,14 +357,18 @@ export class TelegramController {
       if (!decisionCode || !(decisionCode in decisions)) throw new BridgeError("审批决定无效", "APPROVAL_INVALID");
       this.gateway.consumeApproval(token, decisions[decisionCode as keyof typeof decisions]);
       await this.api.answerCallback(callback.id, "审批决定已提交");
+      const labels = { a: "允许一次", s: "本会话允许", d: "已拒绝", c: "已取消任务" } as const;
+      await this.api.editMessage(message.chat.id, message.message_id, `<b>审批已处理</b>\n结果：${labels[decisionCode as keyof typeof labels]}`, { inline_keyboard: [] });
     } else if (action === "input") {
       this.gateway.answerChoiceInput(parts[0] ?? "", Number(parts[1]));
       await this.api.answerCallback(callback.id, "选择已提交");
+      await this.api.editMessage(message.chat.id, message.message_id, "<b>选择已提交</b>\nCodex 已收到你的选择。", { inline_keyboard: [] });
     } else if (action === "taskcancel") {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (!consumed.requestId.startsWith("cancel:")) throw new BridgeError("取消按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
       await this.scheduler.cancel(consumed.requestId.slice("cancel:".length));
       await this.api.answerCallback(callback.id, "任务已取消");
+      await this.api.editMessage(message.chat.id, message.message_id, "<b>任务已取消</b>", { inline_keyboard: [] });
     } else if (action === "p") {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (!consumed.requestId.startsWith("project:")) throw new BridgeError("项目按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
@@ -364,9 +376,38 @@ export class TelegramController {
       if (!project.enabled) throw new BridgeError("该项目已禁用", "PROJECT_DISABLED");
       this.#settings.set("active_project_id", project.id);
       await this.api.answerCallback(callback.id, `已切换到 ${project.name}`);
-      const menu = this.#projectMenu();
-      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+      await this.api.editMessage(message.chat.id, message.message_id, `<b>项目已切换</b>\n当前项目：${escapeHtml(project.name)}\n目录：<code>${escapeHtml(project.normalizedRoot)}</code>`, { inline_keyboard: [] });
       this.audit.record({ eventType: "project_selected", outcome: "accepted", projectId: project.id, actorId: String(owner.id) });
+    } else if (action === "prm") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (consumed.requestId !== "project-remove-menu") throw new BridgeError("移除项目按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const menu = this.#projectRemoveMenu();
+      await this.api.answerCallback(callback.id);
+      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+    } else if (action === "pr") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (!consumed.requestId.startsWith("project-remove:")) throw new BridgeError("移除项目按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const project = this.projects.require(consumed.requestId.slice("project-remove:".length));
+      if (!project.enabled) throw new BridgeError("该项目已被移除", "PROJECT_DISABLED");
+      this.database.connection.transaction(() => {
+        this.projects.disable(project.id);
+        if (this.#settings.get("active_project_id") === project.id) {
+          const next = this.database.connection
+            .prepare("SELECT id FROM projects WHERE enabled = 1 ORDER BY name LIMIT 1")
+            .get() as { id: string } | undefined;
+          if (next) this.#settings.set("active_project_id", next.id);
+          else this.database.connection.prepare("DELETE FROM runtime_settings WHERE key = 'active_project_id'").run();
+        }
+      })();
+      await this.api.answerCallback(callback.id, `已移除 ${project.name}`);
+      await this.api.editMessage(message.chat.id, message.message_id, `<b>项目已移除</b>\n${escapeHtml(project.name)}`, { inline_keyboard: [] });
+      this.audit.record({ eventType: "project_removed", outcome: "accepted", projectId: project.id, actorId: String(owner.id) });
+    } else if (action === "pb") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (consumed.requestId !== "project-list") throw new BridgeError("返回项目列表按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const menu = this.#projectMenu();
+      await this.api.answerCallback(callback.id);
+      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
     } else if (action === "td") {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (!consumed.requestId.startsWith("task-detail:")) throw new BridgeError("任务按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
@@ -384,8 +425,7 @@ export class TelegramController {
       if (!consumed.requestId.startsWith("task-cancel:")) throw new BridgeError("取消任务按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
       await this.scheduler.cancel(consumed.requestId.slice("task-cancel:".length));
       await this.api.answerCallback(callback.id, "任务已取消");
-      const menu = this.#taskMenu();
-      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+      await this.api.editMessage(message.chat.id, message.message_id, "<b>任务已取消</b>", { inline_keyboard: [] });
     } else if (action === "tr") {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (!consumed.requestId.startsWith("task-retry:")) throw new BridgeError("重试任务按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
@@ -395,8 +435,7 @@ export class TelegramController {
       this.tasks.transition(taskId, "queued");
       this.scheduler.wake();
       await this.api.answerCallback(callback.id, "任务已重新排队");
-      const menu = this.#taskMenu();
-      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+      await this.api.editMessage(message.chat.id, message.message_id, `<b>任务已重新排队</b>\nID：<code>${escapeHtml(taskId)}</code>`, { inline_keyboard: [] });
     } else if (action === "sd") {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (!consumed.requestId.startsWith("session-detail:")) throw new BridgeError("会话按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
@@ -415,15 +454,14 @@ export class TelegramController {
       const threadId = consumed.requestId.slice("session-resume:".length);
       this.#resumeThread(threadId, this.#activeProjectId());
       await this.api.answerCallback(callback.id, "会话已恢复");
-      const menu = this.#sessionMenu();
-      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+      await this.api.editMessage(message.chat.id, message.message_id, `<b>会话已恢复</b>\n会话：<code>${escapeHtml(threadId.slice(0, 8))}</code>`, { inline_keyboard: [] });
     } else if (action === "sh") {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (!consumed.requestId.startsWith("session-handback:")) throw new BridgeError("交回会话按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
       const threadId = consumed.requestId.slice("session-handback:".length);
       const row = this.#threadRow(threadId, this.#activeProjectId());
       await this.api.answerCallback(callback.id, "会话信息已显示");
-      await this.api.editMessage(message.chat.id, message.message_id, `<b>交回本机 Codex</b>\nThread ID：<code>${escapeHtml(row.codex_thread_id)}</code>\n\n请在主机 Codex 中继续此会话；Telegram 不会导出隐藏推理。`);
+      await this.api.editMessage(message.chat.id, message.message_id, `<b>交回本机 Codex</b>\nThread ID：<code>${escapeHtml(row.codex_thread_id)}</code>\n\n请在主机 Codex 中继续此会话；Telegram 不会导出隐藏推理。`, { inline_keyboard: [] });
     } else if (action === "m") {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (!consumed.requestId.startsWith("model:")) throw new BridgeError("模型按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
@@ -432,8 +470,14 @@ export class TelegramController {
       if (model && !available.some((item) => item.model === model)) throw new BridgeError("该模型当前不可用", "MODEL_UNAVAILABLE");
       this.database.connection.prepare("UPDATE projects SET default_model = ?, reasoning_effort = NULL, service_tier = NULL, updated_at = ? WHERE id = ?").run(model || null, Date.now(), this.#activeProjectId());
       await this.api.answerCallback(callback.id, model ? `已切换到 ${model}` : "已跟随 Codex 默认模型");
-      const menu = await this.#modelMenu();
-      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+      const project = this.projects.require(this.#activeProjectId());
+      const local = await this.models.localState(project.normalizedRoot);
+      await this.api.editMessage(
+        message.chat.id,
+        message.message_id,
+        `<b>模型已更新</b>\n当前模型：<code>${escapeHtml(project.defaultModel ?? local.model ?? "未设置")}</code>\n来源：${project.defaultModel ? "项目设置" : "本机 Codex"}`,
+        { inline_keyboard: [] },
+      );
     } else if (action === "e") {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (!consumed.requestId.startsWith("effort:")) throw new BridgeError("推理强度按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
@@ -442,8 +486,14 @@ export class TelegramController {
       if (effort && !supported.some((item) => item.reasoningEffort === effort)) throw new BridgeError("当前模型不支持该推理强度", "EFFORT_UNSUPPORTED");
       this.database.connection.prepare("UPDATE projects SET reasoning_effort = ?, updated_at = ? WHERE id = ?").run(effort || null, Date.now(), this.#activeProjectId());
       await this.api.answerCallback(callback.id, effort ? `推理强度已设为 ${effort}` : "已跟随模型默认强度");
-      const menu = await this.#effortMenu();
-      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+      const project = this.projects.require(this.#activeProjectId());
+      const local = await this.models.localState(project.normalizedRoot);
+      await this.api.editMessage(
+        message.chat.id,
+        message.message_id,
+        `<b>思考深度已更新</b>\n当前深度：<code>${escapeHtml(project.reasoningEffort ?? local.reasoningEffort ?? "模型默认")}</code>\n来源：${project.reasoningEffort ? "项目设置" : "本机 Codex"}`,
+        { inline_keyboard: [] },
+      );
     } else if (action === "f") {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (!consumed.requestId.startsWith("fast:")) throw new BridgeError("Fast 按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
@@ -452,8 +502,15 @@ export class TelegramController {
       if (tier && tier !== "default" && !supported.some((item) => item.id === tier)) throw new BridgeError("当前模型不支持该服务档位", "SERVICE_TIER_UNSUPPORTED");
       this.database.connection.prepare("UPDATE projects SET service_tier = ?, updated_at = ? WHERE id = ?").run(tier || null, Date.now(), this.#activeProjectId());
       await this.api.answerCallback(callback.id, tier ? `服务档位已设为 ${tier}` : "已跟随本机 Codex 设置");
-      const menu = await this.#fastMenu();
-      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+      const project = this.projects.require(this.#activeProjectId());
+      const local = await this.models.localState(project.normalizedRoot);
+      const effectiveTier = project.serviceTier ?? local.serviceTier ?? "default";
+      await this.api.editMessage(
+        message.chat.id,
+        message.message_id,
+        `<b>Fast 已更新</b>\n当前状态：${effectiveTier === "default" ? "关闭" : `开启（<code>${escapeHtml(effectiveTier)}</code>）`}\n来源：${project.serviceTier ? "项目设置" : "本机 Codex"}`,
+        { inline_keyboard: [] },
+      );
     } else if (action === "perm") {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (!consumed.requestId.startsWith("permission:")) throw new BridgeError("权限按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
@@ -461,15 +518,14 @@ export class TelegramController {
       if (profile !== "read-only" && profile !== "workspace-write + on-request") throw new BridgeError("权限档无效", "PERMISSION_INVALID");
       this.database.connection.prepare("UPDATE projects SET permission_profile = ?, updated_at = ? WHERE id = ?").run(profile, Date.now(), this.#activeProjectId());
       await this.api.answerCallback(callback.id, "权限已更新");
-      const menu = this.#permissionMenu(owner.id);
-      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+      await this.api.editMessage(message.chat.id, message.message_id, `<b>权限已更新</b>\n当前权限：<code>${escapeHtml(profile)}</code>`, { inline_keyboard: [] });
     } else if (action === "cl") {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (consumed.requestId !== "cleanup") throw new BridgeError("清理按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
       const media = await this.media.cleanup();
       const database = cleanupDatabase(this.database, this.config.taskRetentionDays * 86_400_000, this.config.auditRetentionDays * 86_400_000);
       await this.api.answerCallback(callback.id, "清理完成");
-      await this.api.editMessage(message.chat.id, message.message_id, `清理完成：附件 ${media.attachments}、产物 ${media.artifacts}、任务正文 ${database.taskBodies}、任务事件 ${database.taskEvents}、审计 ${database.auditEvents}。`);
+      await this.api.editMessage(message.chat.id, message.message_id, `<b>清理完成</b>\n附件：${media.attachments}\n产物：${media.artifacts}\n任务正文：${database.taskBodies}\n任务事件：${database.taskEvents}\n审计：${database.auditEvents}`, { inline_keyboard: [] });
     } else if (action === "danger") {
       const token = parts.join(":");
       const projectId = this.#activeProjectId();
@@ -477,10 +533,12 @@ export class TelegramController {
       this.leases.grantDangerLease({ projectId, ownerId: owner.id, hostAllowsDangerFullAccess: this.config.allowDangerFullAccess, telegramConfirmed: true });
       this.database.connection.prepare("UPDATE projects SET permission_profile = 'danger-full-access', updated_at = ? WHERE id = ?").run(Date.now(), projectId);
       await this.api.answerCallback(callback.id, "完全访问已授权 15 分钟", true);
+      await this.api.editMessage(message.chat.id, message.message_id, "<b>完全访问已授权</b>\n当前项目将在十五分钟内使用完全访问权限。", { inline_keyboard: [] });
       this.audit.record({ eventType: "danger_lease", outcome: "granted", projectId, actorId: String(owner.id) });
     } else if (action === "noop") {
       this.approvals.consumeAction(parts.join(":"), "cancel");
       await this.api.answerCallback(callback.id, "操作已取消");
+      await this.api.editMessage(message.chat.id, message.message_id, "<b>操作已取消</b>\n未执行任何更改。", { inline_keyboard: [] });
     } else if (action === "update") {
       if (!this.updates) throw new BridgeError("签名更新源未配置", "UPDATE_NOT_CONFIGURED");
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
@@ -488,6 +546,7 @@ export class TelegramController {
       const version = consumed.requestId.slice("update:".length);
       await this.updates.install(version);
       await this.api.answerCallback(callback.id, `正在安装 ${version}`, true);
+      await this.api.editMessage(message.chat.id, message.message_id, `<b>更新已确认</b>\n正在安装：<code>${escapeHtml(version)}</code>`, { inline_keyboard: [] });
     } else {
       await this.api.answerCallback(callback.id, "操作已取消");
     }
@@ -739,10 +798,37 @@ export class TelegramController {
     return {
       text: `<b>选择项目</b>\n当前：${escapeHtml(rows.find((row) => row.id === active)?.name ?? "未选择")}\n\n点击下方按钮切换；按钮十分钟内有效。`,
       keyboard: {
-        inline_keyboard: rows.map((row) => [{
+        inline_keyboard: [...rows.map((row) => [{
           text: `${row.id === active ? "●" : "○"} ${row.name.slice(0, 40)} · ${shortProjectId(row.id)}`,
           callback_data: `p:${this.approvals.create({ requestId: `project:${row.id}`, threadId: row.id, turnId: "project-menu", itemId: row.id }, expiresAt)}`,
-        }]),
+        }]), [{
+          text: "移除项目",
+          callback_data: `prm:${this.approvals.create({ requestId: "project-remove-menu", threadId: "projects", turnId: "project-menu", itemId: "remove" }, expiresAt)}`,
+        }]],
+      },
+    };
+  }
+
+  #projectRemoveMenu(): { text: string; keyboard: InlineKeyboardMarkup } {
+    const rows = this.database.connection
+      .prepare("SELECT id, name FROM projects WHERE enabled = 1 ORDER BY name")
+      .all() as Array<{ id: string; name: string }>;
+    const expiresAt = Date.now() + 10 * 60_000;
+    return {
+      text: rows.length === 0
+        ? "<b>移除项目</b>\n当前没有可移除的项目。"
+        : "<b>移除项目</b>\n点击项目即可从 Telegram 项目列表移除。项目历史会保留，源码文件不会被删除；按钮十分钟内有效。",
+      keyboard: {
+        inline_keyboard: [
+          ...rows.map((row) => [{
+            text: `移除 ${row.name.slice(0, 36)} · ${shortProjectId(row.id)}`,
+            callback_data: `pr:${this.approvals.create({ requestId: `project-remove:${row.id}`, threadId: row.id, turnId: "project-remove-menu", itemId: row.id }, expiresAt)}`,
+          }]),
+          [{
+            text: "返回项目列表",
+            callback_data: `pb:${this.approvals.create({ requestId: "project-list", threadId: "projects", turnId: "project-remove-menu", itemId: "back" }, expiresAt)}`,
+          }],
+        ],
       },
     };
   }

@@ -29,6 +29,12 @@ export interface RuntimeStore {
 
 export type ApprovalChoice = "accept" | "accept_for_session" | "decline" | "cancel";
 
+export interface ToolActivity {
+  itemId: string;
+  itemType: string;
+  status: "started" | "completed";
+}
+
 export interface ApprovalCard {
   requestId: string;
   threadId: string;
@@ -46,7 +52,7 @@ export interface ApprovalCard {
 export interface InteractiveGateway {
   progress(task: TaskRecord, text: string): void;
   plan(task: TaskRecord, summary: string): Promise<void>;
-  tool(task: TaskRecord, summary: string): Promise<void>;
+  tool(task: TaskRecord, activity: ToolActivity): Promise<void>;
   final(task: TaskRecord, text: string): Promise<void>;
   artifact(task: TaskRecord, filePath: string, projectRoot: string): Promise<void>;
   requestApproval(task: TaskRecord, card: ApprovalCard): Promise<ApprovalChoice>;
@@ -275,7 +281,14 @@ export class AppServerTaskExecutor implements TaskExecutor {
           if (savedPath) await this.gateway.artifact(active.task, savedPath, active.project.rootPath);
         }
         if (itemType && itemType !== "agentMessage" && itemType !== "reasoning") {
-          await this.gateway.tool(active.task, `${notification.method === "item/started" ? "开始" : "完成"}：${itemType}`);
+          const itemId = item ? stringValue(item.id) : null;
+          if (itemId) {
+            await this.gateway.tool(active.task, {
+              itemId,
+              itemType,
+              status: notification.method === "item/started" ? "started" : "completed",
+            });
+          }
         }
         break;
       }

@@ -5,7 +5,7 @@ import type { Logger } from "pino";
 import type { RequestUserInputParams, ServerRequest } from "../app-server/types.js";
 import type { TaskRecord } from "../core/types.js";
 import type { MediaManager } from "../media/manager.js";
-import type { ApprovalCard, ApprovalChoice, InteractiveGateway } from "../orchestrator/app-task-executor.js";
+import type { ApprovalCard, ApprovalChoice, InteractiveGateway, ToolActivity } from "../orchestrator/app-task-executor.js";
 import { type ApprovalBinding } from "../security/index.js";
 import type { ApprovalDecision , ApprovalManager} from "../security/index.js";
 import type { TelegramApi } from "./api.js";
@@ -31,10 +31,17 @@ interface PendingInput {
   timer: NodeJS.Timeout;
 }
 
+interface ToolCard {
+  messageId: number | null;
+  active: Map<string, string>;
+  operation: Promise<void>;
+}
+
 export class TelegramInteractiveGateway extends EventEmitter implements InteractiveGateway {
   readonly #progress = new Map<string, TelegramProgressMessage>();
   readonly #approvals = new Map<string, PendingApproval>();
   readonly #inputs = new Map<string, PendingInput>();
+  readonly #toolCards = new Map<string, ToolCard>();
 
   public constructor(
     private readonly api: TelegramApi,
@@ -64,19 +71,52 @@ export class TelegramInteractiveGateway extends EventEmitter implements Interact
     await this.api.sendMessage(this.chatId, `<b>计划更新 · ${escapeHtml(task.id.slice(0, 8))}</b>\n${escapeHtml(summary)}`);
   }
 
-  public async tool(task: TaskRecord, summary: string): Promise<void> {
-    await this.api.sendMessage(this.chatId, `<b>工具事件 · ${escapeHtml(task.id.slice(0, 8))}</b>\n${escapeHtml(summary)}`);
+  public async tool(task: TaskRecord, activity: ToolActivity): Promise<void> {
+    const card = this.#toolCards.get(task.id) ?? {
+      messageId: null,
+      active: new Map<string, string>(),
+      operation: Promise.resolve(),
+    };
+    this.#toolCards.set(task.id, card);
+    card.operation = card.operation.then(async () => {
+      if (activity.status === "started") card.active.set(activity.itemId, activity.itemType);
+      else card.active.delete(activity.itemId);
+
+      if (card.active.size === 0) {
+        if (card.messageId !== null) await this.#deleteToolCardMessage(task.id, card.messageId);
+        this.#toolCards.delete(task.id);
+        return;
+      }
+
+      const details = [...card.active.values()].map((itemType) => `• ${escapeHtml(itemType)}`).join("\n");
+      const text = `<b>正在调用工具 · ${escapeHtml(task.id.slice(0, 8))}</b>\n${details}`;
+      if (card.messageId === null) {
+        const sent = await this.api.sendMessage(this.chatId, text);
+        card.messageId = sent.message_id;
+      } else {
+        await this.api.editMessage(this.chatId, card.messageId, text);
+      }
+    });
+    await card.operation;
   }
 
   public async final(task: TaskRecord, text: string): Promise<void> {
+    await this.#removeToolCard(task.id);
     const progress = this.#progress.get(task.id);
-    await progress?.flush();
     this.#progress.delete(task.id);
     const chunks = splitTelegramText(text, 3800);
-    for (const [index, chunk] of chunks.entries()) {
+    const firstChunk = chunks[0] ?? "任务已完成，但没有可公开的文本结果。";
+    const renderChunk = (chunk: string, index: number): string =>
+      `<b>最终结果${chunks.length > 1 ? ` ${index + 1}/${chunks.length}` : ""}</b>\n\n${escapeHtml(chunk)}`;
+    if (progress) {
+      await progress.finalize(renderChunk(firstChunk, 0));
+    } else {
+      await this.api.sendMessage(this.chatId, renderChunk(firstChunk, 0));
+    }
+    for (const [index, chunk] of chunks.slice(1).entries()) {
       await this.api.sendMessage(
         this.chatId,
-        `<b>最终结果${chunks.length > 1 ? ` ${index + 1}/${chunks.length}` : ""}</b>\n\n${escapeHtml(chunk)}`,
+        renderChunk(chunk, index + 1),
       );
     }
   }
@@ -245,5 +285,28 @@ export class TelegramInteractiveGateway extends EventEmitter implements Interact
       }
     }
     this.#progress.delete(taskId);
+    void this.#removeToolCard(taskId).catch((error: unknown) => {
+      this.logger.error({ taskId, error: error instanceof Error ? error.message : String(error) }, "删除 Telegram 工具卡片失败");
+    });
+  }
+
+  async #removeToolCard(taskId: string): Promise<void> {
+    const card = this.#toolCards.get(taskId);
+    if (!card) return;
+    await card.operation;
+    this.#toolCards.delete(taskId);
+    if (card.messageId !== null) await this.#deleteToolCardMessage(taskId, card.messageId);
+  }
+
+  async #deleteToolCardMessage(taskId: string, messageId: number): Promise<void> {
+    try {
+      await this.api.deleteMessage(this.chatId, messageId);
+    } catch (error) {
+      this.logger.warn({
+        taskId,
+        messageId,
+        error: error instanceof Error ? error.message : String(error),
+      }, "删除 Telegram 工具卡片失败");
+    }
   }
 }

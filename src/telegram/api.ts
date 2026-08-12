@@ -139,6 +139,13 @@ export class TelegramApi {
     });
   }
 
+  public deleteMessage(chatId: number, messageId: number): Promise<boolean> {
+    return this.#request<boolean>("deleteMessage", {
+      chat_id: chatId,
+      message_id: messageId,
+    });
+  }
+
   public answerCallback(callbackQueryId: string, text?: string, showAlert = false): Promise<boolean> {
     return this.#request<boolean>("answerCallbackQuery", {
       callback_query_id: callbackQueryId,

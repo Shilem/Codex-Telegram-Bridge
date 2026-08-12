@@ -76,13 +76,28 @@ describe("Telegram 交互式管理菜单", () => {
     };
 
     await command("/project");
-    expect(sent.at(-1)?.markup?.inline_keyboard).toHaveLength(2);
+    expect(sent.at(-1)?.markup?.inline_keyboard).toHaveLength(3);
     const secondButton = sent.at(-1)?.markup?.inline_keyboard[1]?.[0];
     expect(secondButton?.text).toContain("Second");
     if (!secondButton) throw new Error("缺少 Second 项目按钮");
     await controller.handle({ update_id: updateId++, callback_query: { id: "cb", from: { id: 10, is_bot: false, first_name: "Owner" }, message: { message_id: 1, date: Math.floor(Date.now() / 1000), chat: { id: 10, type: "private" } }, data: secondButton.callback_data } });
     expect(new RuntimeSettings(database).get("active_project_id")).toBe(second.id);
     expect(edited.at(-1)?.text).toContain("Second");
+    expect(edited.at(-1)?.markup).toEqual({ inline_keyboard: [] });
+
+    await command("/project");
+    const removeMenuButton = sent.at(-1)?.markup?.inline_keyboard.at(-1)?.[0];
+    expect(removeMenuButton?.text).toBe("移除项目");
+    if (!removeMenuButton) throw new Error("缺少移除项目按钮");
+    await controller.handle({ update_id: updateId++, callback_query: { id: "cb-remove-menu", from: { id: 10, is_bot: false, first_name: "Owner" }, message: { message_id: 1, date: Math.floor(Date.now() / 1000), chat: { id: 10, type: "private" } }, data: removeMenuButton.callback_data } });
+    expect(edited.at(-1)?.text).toContain("点击项目即可");
+    const removeSecondButton = edited.at(-1)?.markup?.inline_keyboard.find((row) => row[0]?.text.includes("Second"))?.[0];
+    if (!removeSecondButton) throw new Error("缺少移除 Second 项目按钮");
+    await controller.handle({ update_id: updateId++, callback_query: { id: "cb-remove", from: { id: 10, is_bot: false, first_name: "Owner" }, message: { message_id: 1, date: Math.floor(Date.now() / 1000), chat: { id: 10, type: "private" } }, data: removeSecondButton.callback_data } });
+    expect(projects.require(second.id).enabled).toBe(false);
+    expect(new RuntimeSettings(database).get("active_project_id")).toBe(first.id);
+    expect(edited.at(-1)?.text).toContain("项目已移除");
+    expect(edited.at(-1)?.markup).toEqual({ inline_keyboard: [] });
 
     new RuntimeSettings(database).set("active_project_id", first.id);
     for (const text of ["/tasks", "/sessions", "/model", "/effort", "/fast", "/permissions", "/cleanup"]) {
@@ -94,6 +109,47 @@ describe("Telegram 交互式管理菜单", () => {
     expect(sent.find((item) => item.text.includes("选择推理强度"))?.text).toContain("本机：low");
     expect(sent.find((item) => item.text.includes("选择 Fast 模式"))?.text).toContain("本机：default");
     expect(sent.find((item) => item.text.includes("确认本地清理"))?.text).toContain("不会删除项目源码");
+
+    const chooseLastMenuRow = async (rowIndex: number): Promise<void> => {
+      const button = sent.at(-1)?.markup?.inline_keyboard[rowIndex]?.[0];
+      if (!button) throw new Error(`菜单缺少第 ${rowIndex + 1} 个选项`);
+      await controller.handle({
+        update_id: updateId++,
+        callback_query: {
+          id: `cb-${updateId}`,
+          from: { id: 10, is_bot: false, first_name: "Owner" },
+          message: { message_id: sent.length, date: Math.floor(Date.now() / 1000), chat: { id: 10, type: "private" } },
+          data: button.callback_data,
+        },
+      });
+      expect(edited.at(-1)?.markup).toEqual({ inline_keyboard: [] });
+    };
+
+    await command("/model");
+    await chooseLastMenuRow(1);
+    expect(edited.at(-1)?.text).toContain("模型已更新");
+    await command("/effort");
+    await chooseLastMenuRow(1);
+    expect(edited.at(-1)?.text).toContain("思考深度已更新");
+    await command("/fast");
+    await chooseLastMenuRow(1);
+    expect(edited.at(-1)?.text).toContain("Fast 已更新");
+    await command("/permissions");
+    await chooseLastMenuRow(0);
+    expect(edited.at(-1)?.text).toContain("权限已更新");
+    await command("/cleanup");
+    await chooseLastMenuRow(1);
+    expect(edited.at(-1)?.text).toContain("操作已取消");
+
+    await command("/new");
+    expect(sent.at(-1)?.text).toContain("新对话配置");
+    expect(sent.at(-1)?.text).toContain("项目：First");
+    expect(sent.at(-1)?.text).toContain("模型：<code>gpt-test</code>");
+    expect(sent.at(-1)?.text).toContain("思考深度：<code>low</code>");
+    expect(sent.at(-1)?.text).toContain("Fast：关闭");
+    database.connection.prepare("UPDATE projects SET service_tier = ? WHERE id = ?").run("priority", first.id);
+    await command("/new");
+    expect(sent.at(-1)?.text).toContain("Fast：开启（<code>priority</code>）");
     expect(owner.id).toBe(1);
   });
 });

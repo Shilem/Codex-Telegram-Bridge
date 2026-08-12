@@ -36,4 +36,14 @@ export class TelegramProgressMessage {
     await this.api.editMessage(this.chatId, this.messageId, text);
     this.#lastEditAt = Date.now();
   }
+
+  public async finalize(text: string): Promise<void> {
+    if (this.#pending) {
+      clearTimeout(this.#pending);
+      this.#pending = null;
+    }
+    this.#latestText = null;
+    await this.api.editMessage(this.chatId, this.messageId, text, { inline_keyboard: [] });
+    this.#lastEditAt = Date.now();
+  }
 }
