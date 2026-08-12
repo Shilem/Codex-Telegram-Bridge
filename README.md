@@ -1,72 +1,94 @@
-# Codex Telegram Bridge（VPS 部署版）
+# Codex Telegram Bridge 1.0
 
-这是本机正在运行的 Telegram ↔ Codex tmux 桥接服务的可复现版本。仓库是后续代码、安装脚本和默认配置的唯一版本来源；机密和运行状态永不提交。
+Codex Telegram Bridge 是一个单用户、自托管的 Codex 远程开发客户端。它通过 Telegram Bot 私聊接收任务，并直接使用本机 `codex app-server --listen stdio://` 的结构化 JSON-RPC 协议；不开放公网端口，不依赖 tmux、终端截图或 JSONL 会话猜测。
 
-## 能力
+> Telegram Bot 私聊不是端到端加密渠道。不要发送 API Key、密码、生产凭据或其他机密。
 
-- Telegram 控制现有 Codex TUI；最终答复、媒体、选择与批准会回传。
-- `/ping` 记录收包与回包耗时；短轮询不会再被 60 秒 HTTP 超时阻塞。
-- 拦截 `/exit`、`/quit`，并在 tmux 会话消失时自动重建 Codex 会话。
-- `/new`、`/status`、`/context` 等常用菜单；长任务每 60 秒发送中文进度心跳。
+## 1.0 能力
 
-## 首次安装（Linux VPS 或 macOS）
+- macOS、Linux、Windows；单实例、单 Bot、全局一次只运行一个 Codex 任务。
+- 本机十分钟配对码锁定唯一 `Telegram user ID + private chat ID`；群聊和陌生用户失败闭合。
+- 多个本机预注册项目；Telegram 只能切换项目，不能扩大目录边界。
+- SQLite WAL 任务账本、update 幂等、一次性审批 nonce、崩溃后 `unknown` 恢复。
+- `read-only`、`workspace-write + on-request`、`danger-full-access` 三档权限。
+- 完全访问必须同时满足主机开关和 Telegram 二次确认，只对当前项目生效十五分钟。
+- App Server 计划、工具事件、审批、提问、最终回答和生成产物分开展示；不转发隐藏推理。
+- 入站附件默认 20 MB，出站产物 50 MB；流式下载、三重大小检查、0600 临时文件和路径隔离。
+- 签名更新、原子 `current` 切换、健康检查与失败回滚。
 
-1. 安装前置依赖：Python 3.10+、`tmux`、已登录的 Codex CLI。Ubuntu 可用 `sudo apt install tmux python3-venv`；macOS 可用 `brew install tmux python`。
-2. 克隆仓库后运行：
+语音、视频理解和定时任务不在 1.0 范围内，计划在 1.1 提供。
+
+## 环境要求
+
+- Node.js 24 LTS。
+- 已安装并登录的 Codex CLI，且 `codex app-server --help` 可用。
+- 一个只供本实例使用的 Telegram Bot Token。不要让第二个进程或另一台机器使用同一 Bot 执行 `getUpdates`。
+
+## 安装
+
+macOS 或 Linux：
 
 ```bash
 ./scripts/install.sh
 ```
 
-3. 编辑只在本机保存的配置：
+Windows PowerShell：
 
-```bash
-nano ~/.config/telegram-agent-bridge.env
+```powershell
+.\scripts\install.ps1
 ```
 
-至少填写 `TAB_BOT_TOKEN` 和 `TAB_CHAT_ID`。不要把令牌、Chat ID 或任何 `.env` 文件提交到 Git。
+安装器把程序放入版本目录并原子切换 `current`，生成本地配置和空的 `bot-token` 文件。将 Token 写入安装器提示的文件后，在 Unix 上保持文件权限为 0600。示例配置见 `deploy/config.json.example`。
 
-4. 启动或验证服务：
+首次安装创建的是空 Token 文件，因此服务不会立即启动。写入 Token 后按平台执行安装器最后打印的启动命令：Linux 使用 `systemctl --user start codex-telegram-bridge.service`，macOS 使用提示中的 `launchctl bootstrap ...`，Windows 使用 `schtasks.exe /Run /TN CodexTelegramBridge`。
 
-```bash
-systemctl --user restart telegram-agent-bridge.service
-systemctl --user is-active telegram-agent-bridge.service
-```
-
-macOS 会自动安装并启动 LaunchAgent，日志位于：
+安装完成后先注册项目：
 
 ```bash
-tail -f ~/Library/Logs/codex-telegram-bridge/bridge.log
-launchctl print gui/$(id -u)/com.codex-telegram-bridge.codex
+ctb project add /absolute/path/to/project --name my-project
+ctb project list
+ctb doctor
 ```
 
-首次未运行 Codex tmux 会话时，桥接会按配置自动创建 `tmux -L codex`、名为 `codex` 的会话。
-
-每台机器必须使用独立 Telegram Bot Token 和 Chat ID。Telegram 的 `getUpdates` 不支持多台机器共用同一 Bot 并发轮询，否则消息会被不同机器抢占。
-
-## 日常更新
-
-在仓库目录执行：
+然后向 Bot 私聊发送 `/start`，把十分钟配对码带回主机：
 
 ```bash
-./scripts/update.sh
+ctb pair <code>
 ```
 
-它只快进拉取 Git 版本、重新安装服务文件并重启服务；不会覆盖 `~/.config/telegram-agent-bridge.env`。Linux 重启 systemd 用户服务，macOS 重载对应 LaunchAgent。
+配对完成后，公开配对入口会关闭。
 
-## 默认配置与保留原则
+## Telegram 命令
 
-`deploy/telegram-agent-bridge.env.example` 是可公开的默认模板。安装脚本仅在目标配置不存在时创建它，因此新机按模板安装，老机的令牌和个性化配置会保留。
+- 身份与帮助：`/start`、`/help`
+- 项目：`/projects`、`/project <id>`
+- 会话：`/new`、`/sessions`、`/resume <id>`、`/handback`
+- 任务：`/tasks`、`/cancel [id]`、`/retry <unknown-task-id>`
+- 模型与权限：`/model [name]`、`/effort [level]`、`/permissions [profile]`
+- 状态：`/status`、`/ping`、`/health`
+- 维护：`/cleanup`、`/update`、`/version`
 
-## 常用排查
+`/ping` 只衡量 Telegram 收发路径；`/health` 才检查 App Server、Codex 登录、SQLite、项目和磁盘。
 
-```bash
-journalctl --user -u telegram-agent-bridge.service -n 100 --no-pager
-systemctl --user status telegram-agent-bridge.service --no-pager
+## 主机 CLI
+
+```text
+ctb project add <path> --name <name>
+ctb project list
+ctb project disable <id>
+ctb pair <code>
+ctb doctor
+ctb update --manifest <url> --signature <url> --archive <url> --public-key <pem>
+ctb rollback [version]
+ctb uninstall [--purge-data]
 ```
 
-Telegram 发 `/ping` 后：`telegram_age_ms` 高表示消息到 VPS 前排队；`sendMessage elapsed_ms` 高表示 VPS 回 Telegram 慢。
+`ctb uninstall` 默认保留本地配置和数据；`--purge-data` 会不可恢复地删除它们。
 
-## 发布边界
+## 服务
 
-本仓库基于 `codex-telegram-bridge` 0.9.7（MIT）整理，包含 VPS 本地修复。升级上游版本时，先在新分支合并、检查 `BUG_LOG.md`，再重新验证 Telegram、tmux 和 systemd 流程。
+- macOS：LaunchAgent `com.shilem.codex-telegram-bridge`
+- Linux：systemd user service `codex-telegram-bridge.service`
+- Windows：当前用户 Task Scheduler 任务 `CodexTelegramBridge`
+
+详细设计见 [架构](docs/ARCHITECTURE.md)、[安全模型](docs/SECURITY.md)、[隐私](docs/PRIVACY.md)、[迁移](docs/MIGRATION.md)、[排障](docs/TROUBLESHOOTING.md) 和 [发布流程](docs/RELEASE.md)。App Server 协议背景见 [OpenAI App Server 文档](https://learn.chatgpt.com/docs/app-server)。

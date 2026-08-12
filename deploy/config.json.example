@@ -1,0 +1,14 @@
+{
+  "botTokenFile": "bot-token",
+  "stateDirectory": "__STATE_DIR__",
+  "artifactDirectory": "__STATE_DIR__/artifacts",
+  "codexExecutable": "__CODEX_BIN__",
+  "allowDangerFullAccess": false,
+  "inboundFileLimitBytes": 20971520,
+  "outboundFileLimitBytes": 52428800,
+  "maxUpdateAgeMinutes": 10,
+  "attachmentRetentionHours": 24,
+  "taskRetentionDays": 7,
+  "auditRetentionDays": 30,
+  "logLevel": "info"
+}
