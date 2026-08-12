@@ -82,6 +82,7 @@ cat > "$BIN_DIR/ctb-service-run" <<EOF
 set -euo pipefail
 umask 077
 export CTB_CONFIG_FILE="$CONFIG_FILE"
+export PATH="$(dirname "$NODE_BIN"):$(dirname "$CODEX_BIN"):/usr/bin:/bin:/usr/sbin:/sbin"
 exec "$NODE_BIN" "$INSTALL_ROOT/current/dist/service.js"
 EOF
 chmod 755 "$BIN_DIR/ctb" "$BIN_DIR/ctb-service-run"

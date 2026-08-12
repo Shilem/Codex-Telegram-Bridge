@@ -2,7 +2,7 @@
 import { statfs } from "node:fs/promises";
 import { join } from "node:path";
 
-import { AppServerClient, ProcessAppServerTransport } from "./app-server/index.js";
+import { AppServerClient, CodexModelStateProvider, ProcessAppServerTransport } from "./app-server/index.js";
 import { loadConfig, readBotToken } from "./core/config.js";
 import { acquireInstanceLock } from "./core/instance-lock.js";
 import { createLogger } from "./core/logger.js";
@@ -17,12 +17,21 @@ import { TaskScheduler } from "./scheduler/task-scheduler.js";
 import { ApprovalManager, AuditLog, PairingService } from "./security/index.js";
 import { BridgeDatabase } from "./storage/index.js";
 import { TelegramApi } from "./telegram/api.js";
+import { TELEGRAM_COMMANDS } from "./telegram/commands.js";
 import { TelegramController, type HealthProvider } from "./telegram/controller.js";
 import { TelegramInteractiveGateway } from "./telegram/gateway.js";
 import { UpdateManager } from "./update/manager.js";
 
 const VERSION = "1.0.0";
 process.umask(0o077);
+
+function renderModelCatalogHealth(health: ReturnType<CodexModelStateProvider["health"]>): string {
+  if (health.lastSuccessfulReadAt === null) return "尚未成功读取";
+  const readAt = new Date(health.lastSuccessfulReadAt).toLocaleString("zh-CN", { hour12: false });
+  if (health.lastRefreshWarningAt === null) return `正常（最后读取 ${readAt}）`;
+  const warningAt = new Date(health.lastRefreshWarningAt).toLocaleString("zh-CN", { hour12: false });
+  return `可用但刷新有告警（最后读取 ${readAt}，告警 ${warningAt}）`;
+}
 
 async function main(): Promise<void> {
   const config = await loadConfig();
@@ -43,6 +52,11 @@ async function main(): Promise<void> {
   const audit = new AuditLog(database, auditSalt);
   const token = await readBotToken(config);
   const telegram = new TelegramApi(token, logger);
+  void telegram.setCommands(TELEGRAM_COMMANDS).then(() => {
+    logger.info({ commandCount: TELEGRAM_COMMANDS.length }, "Telegram 私聊命令菜单已同步");
+  }).catch((error: unknown) => {
+    logger.error({ error: errorMessage(error), commandCount: TELEGRAM_COMMANDS.length }, "Telegram 私聊命令菜单同步失败；核心服务继续运行，下次重启将重试");
+  });
   const media = new MediaManager(
     config.stateDirectory,
     config.artifactDirectory,
@@ -72,6 +86,12 @@ async function main(): Promise<void> {
     clientInfo: { name: "codex-telegram-bridge", title: "Codex Telegram Bridge", version: VERSION },
   });
   await appServer.start();
+  const models = new CodexModelStateProvider(appServer, logger);
+  void models.list().then((available) => {
+    logger.info({ modelCount: available.length }, "Codex 本机模型目录读取成功");
+  }).catch((error: unknown) => {
+    logger.error({ error: errorMessage(error) }, "Codex 本机模型目录首次读取失败");
+  });
   appServer.onFatal((error) => {
     logger.fatal({ error: error.message }, "App Server 已失效，退出并交由服务管理器重启");
     process.exitCode = 1;
@@ -105,6 +125,7 @@ async function main(): Promise<void> {
         `Codex 登录：${loginDetail}`,
         `数据库：${databaseOk ? "quick_check 通过" : "损坏"}`,
         `项目：${projectCount.count} 个可用`,
+        `模型目录：${renderModelCatalogHealth(models.health())}`,
         `状态盘剩余：${Math.floor(freeBytes / 1024 / 1024)} MB`,
       ].join("\n");
     },
@@ -131,6 +152,7 @@ async function main(): Promise<void> {
     media,
     gateway,
     health,
+    models,
     updates,
     config,
     logger,
@@ -203,6 +225,7 @@ async function main(): Promise<void> {
     } catch (error) {
       logger.error({ error: errorMessage(error) }, "释放 App Server 执行器失败");
     }
+    models.dispose();
     await appServer.close().catch((error: unknown) => {
       logger.error({ error: errorMessage(error) }, "关闭 App Server 失败");
     });

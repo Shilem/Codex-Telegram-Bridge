@@ -5,6 +5,7 @@ import { isPublicAppServerNotification } from "../app-server/notification-policy
 import type {
   CommandApprovalDecision,
   CommandApprovalRequest,
+  ConfigReadResponse,
   FileChangeApprovalRequest,
   RequestUserInputParams,
   ServerNotification,
@@ -136,6 +137,13 @@ export class AppServerTaskExecutor implements TaskExecutor {
     if (!task.prompt) throw new BridgeError("任务正文已过期或为空，无法执行", "TASK_BODY_MISSING");
     if (this.#current) throw new BridgeError("全局已有 Codex 任务在运行", "GLOBAL_TASK_BUSY");
     const project = this.store.project(task.projectId);
+    const localConfig = await this.appServer.request<ConfigReadResponse>("config/read", {
+      includeLayers: false,
+      cwd: project.rootPath,
+    });
+    const effectiveModel = project.defaultModel ?? localConfig.config.model;
+    const effectiveEffort = project.defaultEffort ?? localConfig.config.model_reasoning_effort;
+    const effectiveServiceTier = project.serviceTier ?? localConfig.config.service_tier ?? "default";
     const profile = project.permissionProfile;
     if (profile === "danger-full-access" && !this.store.dangerLeaseActive(project.id)) {
       throw new BridgeError("当前项目的完全访问授权已过期", "DANGER_LEASE_REQUIRED");
@@ -146,6 +154,7 @@ export class AppServerTaskExecutor implements TaskExecutor {
           threadId: existingThreadId,
           cwd: project.rootPath,
           runtimeWorkspaceRoots: [project.rootPath],
+          serviceTier: project.serviceTier,
           approvalPolicy: profile === "danger-full-access" ? "never" : "on-request",
           sandbox: sandboxFor(profile),
           excludeTurns: true,
@@ -154,11 +163,26 @@ export class AppServerTaskExecutor implements TaskExecutor {
           cwd: project.rootPath,
           runtimeWorkspaceRoots: [project.rootPath],
           model: project.defaultModel,
+          serviceTier: project.serviceTier,
           approvalPolicy: profile === "danger-full-access" ? "never" : "on-request",
           sandbox: sandboxFor(profile),
           ephemeral: false,
         });
     const threadId = threadResponse.thread.id;
+    this.logger.info({
+      taskId: task.id,
+      projectId: project.id,
+      model: threadResponse.model,
+      modelSource: project.defaultModel ? "project" : "local",
+      reasoningEffort: effectiveEffort,
+      reasoningEffortSource: project.defaultEffort ? "project" : "local",
+      serviceTier: threadResponse.serviceTier ?? effectiveServiceTier,
+      serviceTierSource: project.serviceTier ? "project" : "local",
+    }, "Codex 任务运行配置已解析");
+    this.gateway.progress(
+      task,
+      `运行配置：${threadResponse.model || effectiveModel || "未设置"} · ${effectiveEffort ?? "模型默认"} · ${threadResponse.serviceTier ?? effectiveServiceTier}`,
+    );
     if (!existingThreadId) this.store.saveThread(project.id, threadId, profile);
     const input: UserInput[] = [{ type: "text", text: task.prompt, text_elements: [] }];
     const turnResponse = await this.appServer.startTurn({
@@ -167,6 +191,7 @@ export class AppServerTaskExecutor implements TaskExecutor {
       cwd: project.rootPath,
       runtimeWorkspaceRoots: [project.rootPath],
       model: project.defaultModel,
+      serviceTier: project.serviceTier,
       effort: project.defaultEffort,
       summary: "concise",
     });

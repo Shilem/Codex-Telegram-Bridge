@@ -37,7 +37,7 @@ describe("BridgeDatabase", () => {
     expect(db.connection.pragma("journal_mode", { simple: true })).toBe("memory");
     expect(db.connection.pragma("foreign_keys", { simple: true })).toBe(1);
     expect(db.connection.pragma("synchronous", { simple: true })).toBe(2);
-    expect(db.connection.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 4 });
+    expect(db.connection.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 5 });
     expect(
       (db.connection.pragma("table_info(tasks)") as Array<{ name: string }>).some((column) => column.name === "turn_id"),
     ).toBe(true);
@@ -62,6 +62,7 @@ describe("BridgeDatabase", () => {
       { version: 2 },
       { version: 3 },
       { version: 4 },
+      { version: 5 },
     ]);
     expect(
       (upgraded.connection.pragma("table_info(tasks)") as Array<{ name: string }>).some(

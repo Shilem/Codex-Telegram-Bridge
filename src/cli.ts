@@ -12,6 +12,7 @@ import { loadConfig, readBotToken } from "./core/config.js";
 import { errorMessage } from "./core/types.js";
 import { RuntimeSettings } from "./runtime/settings.js";
 import { PairingService, ProjectRegistry } from "./security/index.js";
+import { shortProjectId } from "./security/projects.js";
 import { BridgeDatabase } from "./storage/index.js";
 
 const VERSION = "1.0.0";
@@ -64,18 +65,19 @@ project.command("add")
       const added = new ProjectRegistry(database).register(path, options.name);
       const settings = new RuntimeSettings(database);
       if (!settings.get("active_project_id")) settings.set("active_project_id", added.id);
-      process.stdout.write(`${added.id}\t${added.name}\t${added.normalizedRoot}\n`);
+      process.stdout.write(`${shortProjectId(added.id)}\t${added.name}\t${added.normalizedRoot}\n`);
     } finally {
       database.close();
     }
   });
 project.command("list")
+  .option("--all", "同时显示已禁用项目")
   .description("列出注册项目")
-  .action(async () => {
+  .action(async (options: { all?: boolean }) => {
     const { database } = await openDatabase();
     try {
-      const rows = database.connection.prepare("SELECT id, name, normalized_root, enabled FROM projects ORDER BY name").all() as Array<{ id: string; name: string; normalized_root: string; enabled: number }>;
-      for (const row of rows) process.stdout.write(`${row.id}\t${row.enabled ? "enabled" : "disabled"}\t${row.name}\t${row.normalized_root}\n`);
+      const rows = database.connection.prepare(`SELECT id, name, normalized_root, enabled FROM projects ${options.all ? "" : "WHERE enabled = 1"} ORDER BY name`).all() as Array<{ id: string; name: string; normalized_root: string; enabled: number }>;
+      for (const row of rows) process.stdout.write(`${shortProjectId(row.id)}\t${row.enabled ? "enabled" : "disabled"}\t${row.name}\t${row.normalized_root}\n`);
     } finally {
       database.close();
     }
@@ -86,8 +88,24 @@ project.command("disable")
   .action(async (id: string) => {
     const { database } = await openDatabase();
     try {
-      new ProjectRegistry(database).disable(id);
-      process.stdout.write(`项目已禁用：${id}\n`);
+      const projects = new ProjectRegistry(database);
+      const resolvedId = projects.resolveId(id);
+      projects.disable(resolvedId);
+      process.stdout.write(`项目已禁用：${shortProjectId(resolvedId)}\n`);
+    } finally {
+      database.close();
+    }
+  });
+project.command("remove")
+  .argument("<id>")
+  .description("移除无历史引用的已禁用项目")
+  .action(async (id: string) => {
+    const { database } = await openDatabase();
+    try {
+      const projects = new ProjectRegistry(database);
+      const resolvedId = projects.resolveId(id);
+      projects.remove(resolvedId);
+      process.stdout.write(`项目已移除：${shortProjectId(resolvedId)}\n`);
     } finally {
       database.close();
     }

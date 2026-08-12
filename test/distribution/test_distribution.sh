@@ -45,6 +45,7 @@ CTB_SKIP_DEPENDENCIES=1 CTB_SKIP_SERVICE=1 "$ROOT/scripts/install.sh"
 [ "$(cat "$TMP/install/current/VERSION")" = 1.0.0 ] || fail "current 版本错误"
 assert_file "$TMP/config/config.json"
 assert_file "$TMP/config/bot-token"
+assert_contains "$TMP/user-bin/ctb-service-run" "export PATH=\"$TMP/bin:$TMP/bin:/usr/bin:/bin:/usr/sbin:/sbin\""
 if [ "$(uname -s)" = Darwin ]; then
   TOKEN_MODE=$(stat -f '%Lp' "$TMP/config/bot-token")
 else

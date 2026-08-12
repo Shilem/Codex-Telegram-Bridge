@@ -182,4 +182,9 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX approvals_request ON approvals (request_id, thread_id, turn_id, item_id);
     `,
   },
+  {
+    version: 5,
+    name: "project_service_tier",
+    sql: "ALTER TABLE projects ADD COLUMN service_tier TEXT;",
+  },
 ];

@@ -85,6 +85,20 @@ describe("registered project boundary", () => {
     expect(() => registry.assertOutputPath(project.id, path.join(root, "escape", "new.txt"))).toThrow("escapes");
     expect(() => registry.assertOutputPath(project.id, path.join(root, "escaped-file"))).toThrow("escapes");
   });
+
+  it("accepts unique short ids and only removes disabled projects without history", () => {
+    const db = database();
+    const root = mkdtempSync(path.join(tmpdir(), "ctb-project-short-"));
+    const registry = new ProjectRegistry(db);
+    const project = registry.register(root, "Short");
+    const shortId = project.id.slice(0, 8);
+
+    expect(registry.require(shortId).id).toBe(project.id);
+    expect(() => { registry.remove(shortId); }).toThrow("必须先禁用");
+    registry.disable(shortId);
+    registry.remove(shortId);
+    expect(() => registry.require(shortId)).toThrow("Project not found");
+  });
 });
 
 describe("danger permission lease", () => {

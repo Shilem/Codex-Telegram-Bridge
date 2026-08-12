@@ -58,6 +58,7 @@ export interface ProjectRecord {
   readonly normalizedRoot: string;
   readonly defaultModel: string | null;
   readonly reasoningEffort: string | null;
+  readonly serviceTier: string | null;
   readonly permissionProfile: PermissionProfile;
   readonly enabled: boolean;
 }

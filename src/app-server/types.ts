@@ -145,6 +145,38 @@ export interface TurnStartResponse {
   turn: AppServerTurn;
 }
 
+export interface ModelListParams {
+  cursor?: string | null;
+  limit?: number | null;
+  includeHidden?: boolean | null;
+}
+
+export interface AvailableModel {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  hidden: boolean;
+  isDefault: boolean;
+  defaultReasoningEffort: string;
+  supportedReasoningEfforts: Array<{ reasoningEffort: string; description: string }>;
+  serviceTiers: Array<{ id: string; name: string; description: string }>;
+  defaultServiceTier: string | null;
+}
+
+export interface ModelListResponse {
+  data: AvailableModel[];
+  nextCursor: string | null;
+}
+
+export interface ConfigReadResponse {
+  config: {
+    model: string | null;
+    model_reasoning_effort: string | null;
+    service_tier: string | null;
+  };
+}
+
 export type CommandApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
 export type FileChangeApprovalDecision = CommandApprovalDecision;
 

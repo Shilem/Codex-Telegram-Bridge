@@ -26,6 +26,7 @@ export interface ProjectRecord {
   rootPath: string;
   defaultModel: string | null;
   defaultEffort: string | null;
+  serviceTier: string | null;
   permissionProfile: PermissionProfile;
   enabled: boolean;
 }

@@ -4,6 +4,7 @@ import type { Logger } from "pino";
 
 import type { BridgeConfig } from "../core/config.js";
 import { BridgeError, errorMessage } from "../core/types.js";
+import type { AvailableModel } from "../app-server/types.js";
 import type { MediaManager } from "../media/manager.js";
 import type { TaskScheduler } from "../scheduler/task-scheduler.js";
 import type {
@@ -13,13 +14,15 @@ import type {
   PermissionLeaseManager,
   ProjectRegistry,
 } from "../security/index.js";
+import { shortProjectId } from "../security/projects.js";
 import type { BridgeDatabase, TaskLedger } from "../storage/index.js";
 import { cleanupDatabase } from "../runtime/maintenance.js";
 import { RuntimeSettings } from "../runtime/settings.js";
 import type { TelegramApi } from "./api.js";
 import { commandName, escapeHtml } from "./format.js";
+import { renderCommandHelp } from "./commands.js";
 import type { TelegramInteractiveGateway } from "./gateway.js";
-import type { TelegramCallbackQuery, TelegramMessage, TelegramUpdate } from "./types.js";
+import type { InlineKeyboardMarkup, TelegramCallbackQuery, TelegramMessage, TelegramUpdate } from "./types.js";
 
 export interface HealthProvider {
   render(): Promise<string>;
@@ -28,6 +31,15 @@ export interface HealthProvider {
 export interface UpdateProvider {
   check(): Promise<{ version: string }>;
   install(expectedVersion: string): Promise<void>;
+}
+
+export interface ModelProvider {
+  list(): Promise<AvailableModel[]>;
+  localState(cwd: string): Promise<{
+    model: string | null;
+    reasoningEffort: string | null;
+    serviceTier: string | null;
+  }>;
 }
 
 export class TelegramController {
@@ -47,6 +59,7 @@ export class TelegramController {
     private readonly media: MediaManager,
     private readonly gateway: TelegramInteractiveGateway,
     private readonly health: HealthProvider,
+    private readonly models: ModelProvider,
     private readonly updates: UpdateProvider | null,
     private readonly config: BridgeConfig,
     private readonly logger: Logger,
@@ -186,37 +199,33 @@ export class TelegramController {
         await this.api.sendMessage(message.chat.id, `pong · Telegram 入站延迟 ${ageMs} ms`);
         return "ping";
       }
-      case "projects": {
-        const rows = this.database.connection.prepare("SELECT id, name, normalized_root, enabled FROM projects ORDER BY name").all() as Array<{ id: string; name: string; normalized_root: string; enabled: number }>;
-        const active = this.#settings.get("active_project_id");
-        await this.api.sendMessage(message.chat.id, rows.length
-          ? rows.map((row) => `${row.id === active ? "●" : "○"} <code>${row.id}</code> ${escapeHtml(row.name)}\n  ${escapeHtml(row.normalized_root)}${row.enabled ? "" : "（已禁用）"}`).join("\n")
-          : "尚未注册项目。请在主机执行 <code>ctb project add &lt;path&gt; --name &lt;name&gt;</code>。");
-        return "projects";
-      }
+      case "projects":
       case "project": {
-        const project = this.projects.require(args[0] ?? "");
-        if (!project.enabled) throw new BridgeError("该项目已禁用", "PROJECT_DISABLED");
-        this.#settings.set("active_project_id", project.id);
-        await this.api.sendMessage(message.chat.id, `当前项目已切换为：${escapeHtml(project.name)}`);
-        return "project_selected";
+        if (command === "project" && args[0]) {
+          const project = this.projects.require(args[0]);
+          if (!project.enabled) throw new BridgeError("该项目已禁用", "PROJECT_DISABLED");
+          this.#settings.set("active_project_id", project.id);
+          await this.api.sendMessage(message.chat.id, `当前项目已切换为：${escapeHtml(project.name)}`);
+          return "project_selected";
+        }
+        const menu = this.#projectMenu();
+        await this.api.sendMessage(message.chat.id, menu.text, menu.keyboard);
+        return "project_menu";
       }
       case "tasks": {
-        const rows = this.tasks.listTasks([], 20);
-        await this.api.sendMessage(message.chat.id, rows.length
-          ? rows.map((task) => `<code>${task.id}</code> · ${task.state}`).join("\n")
-          : "暂无任务。");
-        return "tasks";
+        const menu = this.#taskMenu();
+        await this.api.sendMessage(message.chat.id, menu.text, menu.keyboard);
+        return "task_menu";
       }
       case "cancel": {
-        const taskId = args[0] ?? this.scheduler.currentTask?.id;
+        const taskId = args[0] ? this.#resolveTaskId(args[0]) : this.scheduler.currentTask?.id;
         if (!taskId) throw new BridgeError("没有可取消的任务", "TASK_NOT_FOUND");
         await this.scheduler.cancel(taskId);
         await this.api.sendMessage(message.chat.id, `任务 <code>${taskId}</code> 已取消。`);
         return "task_cancelled";
       }
       case "retry": {
-        const source = this.tasks.requireTask(args[0] ?? "");
+        const source = this.tasks.requireTask(this.#resolveTaskId(args[0] ?? ""));
         if (source.state !== "unknown") throw new BridgeError("仅 unknown 任务可安全重试；失败任务请重新发送正文", "RETRY_NOT_SAFE");
         const retried = this.tasks.transition(source.id, "queued");
         this.scheduler.wake();
@@ -232,26 +241,47 @@ export class TelegramController {
       case "sessions":
       case "resume": {
         const projectId = this.#activeProjectId();
-        const rows = this.database.connection.prepare("SELECT id, codex_thread_id, permission_profile, closed_at FROM threads WHERE project_id = ? ORDER BY updated_at DESC LIMIT 20").all(projectId) as Array<{ id: string; codex_thread_id: string; permission_profile: string; closed_at: number | null }>;
         if (command === "resume" && args[0]) {
-          this.database.connection.prepare("UPDATE threads SET closed_at = NULL, updated_at = ? WHERE id = ? AND project_id = ?").run(Date.now(), args[0], projectId);
-          await this.api.sendMessage(message.chat.id, `已恢复会话 <code>${escapeHtml(args[0])}</code>。`);
+          const threadId = this.#resolveThreadId(args[0], projectId);
+          this.#resumeThread(threadId, projectId);
+          await this.api.sendMessage(message.chat.id, `已恢复会话 <code>${escapeHtml(threadId.slice(0, 8))}</code>。`);
           return "session_resumed";
         }
-        await this.api.sendMessage(message.chat.id, rows.length ? rows.map((row) => `<code>${row.id}</code> · ${row.permission_profile}${row.closed_at ? " · 已关闭" : " · 活跃"}\n${escapeHtml(row.codex_thread_id)}`).join("\n") : "暂无会话。");
-        return "sessions";
+        const menu = this.#sessionMenu();
+        await this.api.sendMessage(message.chat.id, menu.text, menu.keyboard);
+        return "session_menu";
       }
       case "handback":
         await this.api.sendMessage(message.chat.id, "会话已保留在 Codex 本地历史中。请在主机 Codex 中按 thread ID 继续；Telegram 不会导出或转发隐藏推理。 ");
         return "handback";
       case "model":
-      case "effort": {
+      case "effort":
+      case "fast": {
         const projectId = this.#activeProjectId();
-        const column = command === "model" ? "default_model" : "reasoning_effort";
-        if (args[0]) this.database.connection.prepare(`UPDATE projects SET ${column} = ?, updated_at = ? WHERE id = ?`).run(args[0], Date.now(), projectId);
-        const project = this.projects.require(projectId);
-        await this.api.sendMessage(message.chat.id, `${command === "model" ? "模型" : "推理强度"}：<code>${escapeHtml(command === "model" ? project.defaultModel ?? "默认" : project.reasoningEffort ?? "默认")}</code>`);
-        return `${command}_updated`;
+        const column = command === "model" ? "default_model" : command === "effort" ? "reasoning_effort" : "service_tier";
+        if (args[0]) {
+          if (command === "model") {
+            const available = await this.models.list();
+            if (!available.some((model) => model.model === args[0])) throw new BridgeError("该模型当前不可用", "MODEL_UNAVAILABLE");
+          } else if (command === "effort") {
+            const supported = await this.#supportedEfforts();
+            if (!supported.some((effort) => effort.reasoningEffort === args[0])) throw new BridgeError("当前模型不支持该推理强度", "EFFORT_UNSUPPORTED");
+          } else {
+            const tiers = await this.#supportedServiceTiers();
+            if (args[0] !== "default" && !tiers.some((tier) => tier.id === args[0])) throw new BridgeError("当前模型不支持该服务档位", "SERVICE_TIER_UNSUPPORTED");
+          }
+          if (command === "model") {
+            this.database.connection.prepare("UPDATE projects SET default_model = ?, reasoning_effort = NULL, service_tier = NULL, updated_at = ? WHERE id = ?").run(args[0], Date.now(), projectId);
+          } else {
+            this.database.connection.prepare(`UPDATE projects SET ${column} = ?, updated_at = ? WHERE id = ?`).run(args[0], Date.now(), projectId);
+          }
+          const label = command === "model" ? "模型" : command === "effort" ? "推理强度" : "服务档位";
+          await this.api.sendMessage(message.chat.id, `${label}已设置为：<code>${escapeHtml(args[0])}</code>`);
+          return `${command}_updated`;
+        }
+        const menu = command === "model" ? await this.#modelMenu() : command === "effort" ? await this.#effortMenu() : await this.#fastMenu();
+        await this.api.sendMessage(message.chat.id, menu.text, menu.keyboard);
+        return `${command}_menu`;
       }
       case "permissions": {
         const projectId = this.#activeProjectId();
@@ -264,24 +294,27 @@ export class TelegramController {
         if (args[0] === "read-only" || args[0] === "workspace-write") {
           const value = args[0] === "workspace-write" ? "workspace-write + on-request" : args[0];
           this.database.connection.prepare("UPDATE projects SET permission_profile = ?, updated_at = ? WHERE id = ?").run(value, Date.now(), projectId);
+          await this.api.sendMessage(message.chat.id, `当前权限：<code>${escapeHtml(value)}</code>`);
+          return "permissions_updated";
         }
-        await this.api.sendMessage(message.chat.id, `当前权限：<code>${escapeHtml(this.projects.require(projectId).permissionProfile)}</code>`);
-        return "permissions";
+        const menu = this.#permissionMenu(ownerId);
+        await this.api.sendMessage(message.chat.id, menu.text, menu.keyboard);
+        return "permissions_menu";
       }
       case "status": {
         const project = this.projects.require(this.#activeProjectId());
+        const local = await this.models.localState(project.normalizedRoot);
         const active = this.scheduler.currentTask;
-        await this.api.sendMessage(message.chat.id, `<b>服务状态</b>\n项目：${escapeHtml(project.name)}\n模型：${escapeHtml(project.defaultModel ?? "默认")}\n权限：${escapeHtml(project.permissionProfile)}\n运行任务：${active ? `<code>${active.id}</code>` : "无"}\n队列：${this.tasks.listQueued().length}`);
+        await this.api.sendMessage(message.chat.id, `<b>服务状态</b>\n项目：${escapeHtml(project.name)}\n模型：${escapeHtml(project.defaultModel ?? local.model ?? "未设置")}\n推理强度：${escapeHtml(project.reasoningEffort ?? local.reasoningEffort ?? "模型默认")}\nFast：${escapeHtml(project.serviceTier ?? local.serviceTier ?? "default")}\n权限：${escapeHtml(project.permissionProfile)}\n运行任务：${active ? `<code>${active.id}</code>` : "无"}\n队列：${this.tasks.listQueued().length}`);
         return "status";
       }
       case "health":
         await this.api.sendMessage(message.chat.id, await this.health.render());
         return "health";
       case "cleanup": {
-        const media = await this.media.cleanup();
-        const database = cleanupDatabase(this.database, this.config.taskRetentionDays * 86_400_000, this.config.auditRetentionDays * 86_400_000);
-        await this.api.sendMessage(message.chat.id, `清理完成：附件 ${media.attachments}、产物 ${media.artifacts}、任务正文 ${database.taskBodies}、任务事件 ${database.taskEvents}、审计 ${database.auditEvents}。`);
-        return "cleanup";
+        const token = this.approvals.create({ requestId: "cleanup", threadId: "maintenance", turnId: "cleanup", itemId: String(ownerId) }, Date.now() + 10 * 60_000);
+        await this.api.sendMessage(message.chat.id, `<b>确认本地清理</b>\n附件与产物：超过 ${this.config.attachmentRetentionHours} 小时\n任务正文：超过 ${this.config.taskRetentionDays} 天\n脱敏审计：超过 ${this.config.auditRetentionDays} 天\n\n不会删除项目源码。`, { inline_keyboard: [[{ text: "确认清理", callback_data: `cl:${token}` }], [{ text: "取消", callback_data: `noop:${token}` }]] });
+        return "cleanup_confirmation_requested";
       }
       case "version":
         await this.api.sendMessage(message.chat.id, "Codex Telegram Bridge 1.0.0");
@@ -324,6 +357,119 @@ export class TelegramController {
       if (!consumed.requestId.startsWith("cancel:")) throw new BridgeError("取消按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
       await this.scheduler.cancel(consumed.requestId.slice("cancel:".length));
       await this.api.answerCallback(callback.id, "任务已取消");
+    } else if (action === "p") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (!consumed.requestId.startsWith("project:")) throw new BridgeError("项目按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const project = this.projects.require(consumed.requestId.slice("project:".length));
+      if (!project.enabled) throw new BridgeError("该项目已禁用", "PROJECT_DISABLED");
+      this.#settings.set("active_project_id", project.id);
+      await this.api.answerCallback(callback.id, `已切换到 ${project.name}`);
+      const menu = this.#projectMenu();
+      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+      this.audit.record({ eventType: "project_selected", outcome: "accepted", projectId: project.id, actorId: String(owner.id) });
+    } else if (action === "td") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (!consumed.requestId.startsWith("task-detail:")) throw new BridgeError("任务按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const detail = this.#taskDetail(consumed.requestId.slice("task-detail:".length));
+      await this.api.answerCallback(callback.id);
+      await this.api.editMessage(message.chat.id, message.message_id, detail.text, detail.keyboard);
+    } else if (action === "tb") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (consumed.requestId !== "task-list") throw new BridgeError("任务列表按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const menu = this.#taskMenu();
+      await this.api.answerCallback(callback.id);
+      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+    } else if (action === "tc") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (!consumed.requestId.startsWith("task-cancel:")) throw new BridgeError("取消任务按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      await this.scheduler.cancel(consumed.requestId.slice("task-cancel:".length));
+      await this.api.answerCallback(callback.id, "任务已取消");
+      const menu = this.#taskMenu();
+      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+    } else if (action === "tr") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (!consumed.requestId.startsWith("task-retry:")) throw new BridgeError("重试任务按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const taskId = consumed.requestId.slice("task-retry:".length);
+      const source = this.tasks.requireTask(taskId);
+      if (source.state !== "unknown") throw new BridgeError("仅 unknown 任务可安全重试", "RETRY_NOT_SAFE");
+      this.tasks.transition(taskId, "queued");
+      this.scheduler.wake();
+      await this.api.answerCallback(callback.id, "任务已重新排队");
+      const menu = this.#taskMenu();
+      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+    } else if (action === "sd") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (!consumed.requestId.startsWith("session-detail:")) throw new BridgeError("会话按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const detail = this.#sessionDetail(consumed.requestId.slice("session-detail:".length));
+      await this.api.answerCallback(callback.id);
+      await this.api.editMessage(message.chat.id, message.message_id, detail.text, detail.keyboard);
+    } else if (action === "sb") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (consumed.requestId !== "session-list") throw new BridgeError("会话列表按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const menu = this.#sessionMenu();
+      await this.api.answerCallback(callback.id);
+      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+    } else if (action === "sr") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (!consumed.requestId.startsWith("session-resume:")) throw new BridgeError("恢复会话按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const threadId = consumed.requestId.slice("session-resume:".length);
+      this.#resumeThread(threadId, this.#activeProjectId());
+      await this.api.answerCallback(callback.id, "会话已恢复");
+      const menu = this.#sessionMenu();
+      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+    } else if (action === "sh") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (!consumed.requestId.startsWith("session-handback:")) throw new BridgeError("交回会话按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const threadId = consumed.requestId.slice("session-handback:".length);
+      const row = this.#threadRow(threadId, this.#activeProjectId());
+      await this.api.answerCallback(callback.id, "会话信息已显示");
+      await this.api.editMessage(message.chat.id, message.message_id, `<b>交回本机 Codex</b>\nThread ID：<code>${escapeHtml(row.codex_thread_id)}</code>\n\n请在主机 Codex 中继续此会话；Telegram 不会导出隐藏推理。`);
+    } else if (action === "m") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (!consumed.requestId.startsWith("model:")) throw new BridgeError("模型按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const model = consumed.requestId.slice("model:".length);
+      const available = await this.models.list();
+      if (model && !available.some((item) => item.model === model)) throw new BridgeError("该模型当前不可用", "MODEL_UNAVAILABLE");
+      this.database.connection.prepare("UPDATE projects SET default_model = ?, reasoning_effort = NULL, service_tier = NULL, updated_at = ? WHERE id = ?").run(model || null, Date.now(), this.#activeProjectId());
+      await this.api.answerCallback(callback.id, model ? `已切换到 ${model}` : "已跟随 Codex 默认模型");
+      const menu = await this.#modelMenu();
+      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+    } else if (action === "e") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (!consumed.requestId.startsWith("effort:")) throw new BridgeError("推理强度按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const effort = consumed.requestId.slice("effort:".length);
+      const supported = await this.#supportedEfforts();
+      if (effort && !supported.some((item) => item.reasoningEffort === effort)) throw new BridgeError("当前模型不支持该推理强度", "EFFORT_UNSUPPORTED");
+      this.database.connection.prepare("UPDATE projects SET reasoning_effort = ?, updated_at = ? WHERE id = ?").run(effort || null, Date.now(), this.#activeProjectId());
+      await this.api.answerCallback(callback.id, effort ? `推理强度已设为 ${effort}` : "已跟随模型默认强度");
+      const menu = await this.#effortMenu();
+      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+    } else if (action === "f") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (!consumed.requestId.startsWith("fast:")) throw new BridgeError("Fast 按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const tier = consumed.requestId.slice("fast:".length);
+      const supported = await this.#supportedServiceTiers();
+      if (tier && tier !== "default" && !supported.some((item) => item.id === tier)) throw new BridgeError("当前模型不支持该服务档位", "SERVICE_TIER_UNSUPPORTED");
+      this.database.connection.prepare("UPDATE projects SET service_tier = ?, updated_at = ? WHERE id = ?").run(tier || null, Date.now(), this.#activeProjectId());
+      await this.api.answerCallback(callback.id, tier ? `服务档位已设为 ${tier}` : "已跟随本机 Codex 设置");
+      const menu = await this.#fastMenu();
+      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+    } else if (action === "perm") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (!consumed.requestId.startsWith("permission:")) throw new BridgeError("权限按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const profile = consumed.requestId.slice("permission:".length);
+      if (profile !== "read-only" && profile !== "workspace-write + on-request") throw new BridgeError("权限档无效", "PERMISSION_INVALID");
+      this.database.connection.prepare("UPDATE projects SET permission_profile = ?, updated_at = ? WHERE id = ?").run(profile, Date.now(), this.#activeProjectId());
+      await this.api.answerCallback(callback.id, "权限已更新");
+      const menu = this.#permissionMenu(owner.id);
+      await this.api.editMessage(message.chat.id, message.message_id, menu.text, menu.keyboard);
+    } else if (action === "cl") {
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (consumed.requestId !== "cleanup") throw new BridgeError("清理按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const media = await this.media.cleanup();
+      const database = cleanupDatabase(this.database, this.config.taskRetentionDays * 86_400_000, this.config.auditRetentionDays * 86_400_000);
+      await this.api.answerCallback(callback.id, "清理完成");
+      await this.api.editMessage(message.chat.id, message.message_id, `清理完成：附件 ${media.attachments}、产物 ${media.artifacts}、任务正文 ${database.taskBodies}、任务事件 ${database.taskEvents}、审计 ${database.auditEvents}。`);
     } else if (action === "danger") {
       const token = parts.join(":");
       const projectId = this.#activeProjectId();
@@ -358,7 +504,250 @@ export class TelegramController {
     return row.id;
   }
 
+  #resolveTaskId(taskId: string): string {
+    const exact = this.database.connection.prepare("SELECT id FROM tasks WHERE id = ?").get(taskId) as { id: string } | undefined;
+    if (exact) return exact.id;
+    const matches = this.database.connection.prepare("SELECT id FROM tasks WHERE id LIKE ? ORDER BY id LIMIT 2").all(`${taskId}%`) as Array<{ id: string }>;
+    const match = matches[0];
+    if (matches.length !== 1 || !match) throw new BridgeError(matches.length ? "任务短 ID 不唯一，请输入更多字符" : "任务不存在", "TASK_NOT_FOUND");
+    return match.id;
+  }
+
+  #resolveThreadId(threadId: string, projectId: string): string {
+    const matches = this.database.connection
+      .prepare("SELECT id FROM threads WHERE project_id = ? AND (id = ? OR id LIKE ?) ORDER BY id LIMIT 2")
+      .all(projectId, threadId, `${threadId}%`) as Array<{ id: string }>;
+    const exact = matches.find((row) => row.id === threadId);
+    if (exact) return exact.id;
+    const match = matches[0];
+    if (matches.length !== 1 || !match) throw new BridgeError(matches.length ? "会话短 ID 不唯一，请输入更多字符" : "会话不存在", "SESSION_NOT_FOUND");
+    return match.id;
+  }
+
+  #threadRow(threadId: string, projectId: string): { id: string; codex_thread_id: string; permission_profile: string; closed_at: number | null; created_at: number; updated_at: number } {
+    const row = this.database.connection
+      .prepare("SELECT id, codex_thread_id, permission_profile, closed_at, created_at, updated_at FROM threads WHERE id = ? AND project_id = ?")
+      .get(threadId, projectId) as { id: string; codex_thread_id: string; permission_profile: string; closed_at: number | null; created_at: number; updated_at: number } | undefined;
+    if (!row) throw new BridgeError("会话不存在或不属于当前项目", "SESSION_NOT_FOUND");
+    return row;
+  }
+
+  #resumeThread(threadId: string, projectId: string): void {
+    const row = this.#threadRow(threadId, projectId);
+    const project = this.projects.require(projectId);
+    if (row.permission_profile !== project.permissionProfile) {
+      throw new BridgeError(`会话权限为 ${row.permission_profile}，请先用 /permissions 切换到相同权限`, "SESSION_PERMISSION_MISMATCH");
+    }
+    const now = Date.now();
+    this.database.connection.transaction(() => {
+      this.database.connection
+        .prepare("UPDATE threads SET closed_at = ?, updated_at = ? WHERE project_id = ? AND permission_profile = ? AND id <> ? AND closed_at IS NULL")
+        .run(now, now, projectId, row.permission_profile, threadId);
+      const changes = this.database.connection
+        .prepare("UPDATE threads SET closed_at = NULL, updated_at = ? WHERE id = ? AND project_id = ?")
+        .run(now, threadId, projectId).changes;
+      if (changes !== 1) throw new BridgeError("恢复会话失败", "SESSION_RESUME_FAILED");
+    })();
+  }
+
+  #taskMenu(): { text: string; keyboard: InlineKeyboardMarkup } {
+    const projectId = this.#activeProjectId();
+    const rows = this.tasks.listTasks([], 50).filter((task) => task.projectId === projectId).slice(0, 10);
+    if (!rows.length) return { text: "当前项目暂无任务。", keyboard: { inline_keyboard: [] } };
+    const expiresAt = Date.now() + 10 * 60_000;
+    return {
+      text: "<b>任务管理</b>\n点击任务查看详情；按钮十分钟内有效。",
+      keyboard: {
+        inline_keyboard: rows.map((task) => [{
+          text: `${this.#taskStateLabel(task.state)} · ${task.id.slice(0, 8)} · ${this.#formatTime(task.updatedAt)}`,
+          callback_data: `td:${this.approvals.create({ requestId: `task-detail:${task.id}`, threadId: task.threadId ?? task.id, turnId: task.turnId ?? "task-menu", itemId: task.id }, expiresAt)}`,
+        }]),
+      },
+    };
+  }
+
+  #taskDetail(taskId: string): { text: string; keyboard: InlineKeyboardMarkup } {
+    const task = this.tasks.requireTask(taskId);
+    if (task.projectId !== this.#activeProjectId()) throw new BridgeError("任务不属于当前项目", "TASK_PROJECT_MISMATCH");
+    const expiresAt = Date.now() + 10 * 60_000;
+    const buttons: InlineKeyboardMarkup["inline_keyboard"] = [];
+    if (!["completed", "failed", "cancelled"].includes(task.state)) {
+      buttons.push([{ text: "取消任务", callback_data: `tc:${this.approvals.create({ requestId: `task-cancel:${task.id}`, threadId: task.threadId ?? task.id, turnId: task.turnId ?? "task-menu", itemId: task.id }, expiresAt)}` }]);
+    }
+    if (task.state === "unknown") {
+      buttons.push([{ text: "安全重试", callback_data: `tr:${this.approvals.create({ requestId: `task-retry:${task.id}`, threadId: task.threadId ?? task.id, turnId: task.turnId ?? "task-menu", itemId: task.id }, expiresAt)}` }]);
+    }
+    buttons.push([{ text: "返回任务列表", callback_data: `tb:${this.approvals.create({ requestId: "task-list", threadId: task.projectId, turnId: "task-menu", itemId: task.id }, expiresAt)}` }]);
+    return {
+      text: `<b>任务详情</b>\nID：<code>${task.id.slice(0, 8)}</code>\n状态：${this.#taskStateLabel(task.state)}\n创建：${this.#formatTime(task.createdAt)}\n更新：${this.#formatTime(task.updatedAt)}${task.error ? `\n错误：${escapeHtml(task.error)}` : ""}`,
+      keyboard: { inline_keyboard: buttons },
+    };
+  }
+
+  #sessionMenu(): { text: string; keyboard: InlineKeyboardMarkup } {
+    const projectId = this.#activeProjectId();
+    const rows = this.database.connection
+      .prepare("SELECT id, permission_profile, closed_at, updated_at FROM threads WHERE project_id = ? ORDER BY updated_at DESC LIMIT 10")
+      .all(projectId) as Array<{ id: string; permission_profile: string; closed_at: number | null; updated_at: number }>;
+    if (!rows.length) return { text: "当前项目暂无会话。发送普通任务后会自动创建。", keyboard: { inline_keyboard: [] } };
+    const expiresAt = Date.now() + 10 * 60_000;
+    return {
+      text: "<b>会话管理</b>\n点击会话查看详情；按钮十分钟内有效。",
+      keyboard: {
+        inline_keyboard: rows.map((row) => [{
+          text: `${row.closed_at === null ? "●" : "○"} ${row.permission_profile} · ${row.id.slice(0, 8)} · ${this.#formatTime(row.updated_at)}`.slice(0, 60),
+          callback_data: `sd:${this.approvals.create({ requestId: `session-detail:${row.id}`, threadId: row.id, turnId: "session-menu", itemId: row.id }, expiresAt)}`,
+        }]),
+      },
+    };
+  }
+
+  #sessionDetail(threadId: string): { text: string; keyboard: InlineKeyboardMarkup } {
+    const row = this.#threadRow(threadId, this.#activeProjectId());
+    const expiresAt = Date.now() + 10 * 60_000;
+    const keyboard: InlineKeyboardMarkup["inline_keyboard"] = [];
+    if (row.closed_at !== null) {
+      keyboard.push([{ text: "恢复此会话", callback_data: `sr:${this.approvals.create({ requestId: `session-resume:${row.id}`, threadId: row.id, turnId: "session-menu", itemId: row.id }, expiresAt)}` }]);
+    }
+    keyboard.push([{ text: "交回本机 Codex", callback_data: `sh:${this.approvals.create({ requestId: `session-handback:${row.id}`, threadId: row.id, turnId: "session-menu", itemId: row.id }, expiresAt)}` }]);
+    keyboard.push([{ text: "返回会话列表", callback_data: `sb:${this.approvals.create({ requestId: "session-list", threadId: row.id, turnId: "session-menu", itemId: row.id }, expiresAt)}` }]);
+    return {
+      text: `<b>会话详情</b>\nID：<code>${row.id.slice(0, 8)}</code>\n状态：${row.closed_at === null ? "活跃" : "已关闭"}\n权限：${escapeHtml(row.permission_profile)}\n创建：${this.#formatTime(row.created_at)}\n最近活动：${this.#formatTime(row.updated_at)}`,
+      keyboard: { inline_keyboard: keyboard },
+    };
+  }
+
+  async #modelMenu(): Promise<{ text: string; keyboard: InlineKeyboardMarkup }> {
+    const project = this.projects.require(this.#activeProjectId());
+    const models = await this.models.list();
+    const local = await this.models.localState(project.normalizedRoot);
+    const effectiveModel = project.defaultModel ?? local.model ?? models.find((model) => model.isDefault)?.model ?? null;
+    const expiresAt = Date.now() + 10 * 60_000;
+    const rows = [{ model: "", displayName: "跟随本机 Codex 设置" }, ...models.map((model) => ({ model: model.model, displayName: model.displayName }))];
+    return {
+      text: `<b>选择模型</b>\n本机：${escapeHtml(local.model ?? "未设置")}\n当前生效：${escapeHtml(effectiveModel ?? "未设置")}（${project.defaultModel ? "项目覆盖" : "本机设置"}）\n切换模型会清空项目级推理强度和 Fast 档位。`,
+      keyboard: {
+        inline_keyboard: rows.map((row) => [{
+          text: `${(project.defaultModel ?? "") === row.model ? "●" : "○"} ${row.displayName}`.slice(0, 60),
+          callback_data: `m:${this.approvals.create({ requestId: `model:${row.model}`, threadId: project.id, turnId: "model-menu", itemId: row.model || "default" }, expiresAt)}`,
+        }]),
+      },
+    };
+  }
+
+  async #supportedEfforts(): Promise<Array<{ reasoningEffort: string; description: string }>> {
+    const project = this.projects.require(this.#activeProjectId());
+    const models = await this.models.list();
+    const local = await this.models.localState(project.normalizedRoot);
+    const effectiveModel = project.defaultModel ?? local.model;
+    const selected = effectiveModel ? models.find((model) => model.model === effectiveModel) : models.find((model) => model.isDefault);
+    if (!selected) throw new BridgeError("无法确定当前模型支持的推理强度", "MODEL_NOT_FOUND");
+    return selected.supportedReasoningEfforts;
+  }
+
+  async #effortMenu(): Promise<{ text: string; keyboard: InlineKeyboardMarkup }> {
+    const project = this.projects.require(this.#activeProjectId());
+    const local = await this.models.localState(project.normalizedRoot);
+    const efforts = await this.#supportedEfforts();
+    const effectiveEffort = project.reasoningEffort ?? local.reasoningEffort ?? "模型默认";
+    const expiresAt = Date.now() + 10 * 60_000;
+    const rows = [{ reasoningEffort: "", description: "跟随本机 Codex 设置" }, ...efforts];
+    return {
+      text: `<b>选择推理强度</b>\n本机：${escapeHtml(local.reasoningEffort ?? "模型默认")}\n当前生效：${escapeHtml(effectiveEffort)}（${project.reasoningEffort ? "项目覆盖" : "本机设置"}）`,
+      keyboard: {
+        inline_keyboard: rows.map((row) => [{
+          text: `${(project.reasoningEffort ?? "") === row.reasoningEffort ? "●" : "○"} ${row.reasoningEffort || "默认"} · ${row.description}`.slice(0, 60),
+          callback_data: `e:${this.approvals.create({ requestId: `effort:${row.reasoningEffort}`, threadId: project.id, turnId: "effort-menu", itemId: row.reasoningEffort || "default" }, expiresAt)}`,
+        }]),
+      },
+    };
+  }
+
+  async #selectedModel(): Promise<{ project: ReturnType<ProjectRegistry["require"]>; model: AvailableModel; local: Awaited<ReturnType<ModelProvider["localState"]>> }> {
+    const project = this.projects.require(this.#activeProjectId());
+    const [models, local] = await Promise.all([
+      this.models.list(),
+      this.models.localState(project.normalizedRoot),
+    ]);
+    const effectiveModel = project.defaultModel ?? local.model;
+    const model = effectiveModel ? models.find((item) => item.model === effectiveModel) : models.find((item) => item.isDefault);
+    if (!model) throw new BridgeError("无法确定当前模型的本机服务档位", "MODEL_NOT_FOUND");
+    return { project, model, local };
+  }
+
+  async #supportedServiceTiers(): Promise<Array<{ id: string; name: string; description: string }>> {
+    return (await this.#selectedModel()).model.serviceTiers;
+  }
+
+  async #fastMenu(): Promise<{ text: string; keyboard: InlineKeyboardMarkup }> {
+    const { project, model, local } = await this.#selectedModel();
+    const effectiveTier = project.serviceTier ?? local.serviceTier ?? "default";
+    const expiresAt = Date.now() + 10 * 60_000;
+    const rows = [
+      { id: "", name: "跟随本机 Codex 设置", description: local.serviceTier ?? "default" },
+      { id: "default", name: "Standard", description: "标准速度与用量" },
+      ...model.serviceTiers,
+    ];
+    return {
+      text: `<b>选择 Fast 模式</b>\n模型：${escapeHtml(model.displayName)}\n本机：${escapeHtml(local.serviceTier ?? "default")}\n当前生效：${escapeHtml(effectiveTier)}（${project.serviceTier ? "项目覆盖" : "本机设置"}）`,
+      keyboard: {
+        inline_keyboard: rows.map((row) => [{
+          text: `${(project.serviceTier ?? "") === row.id ? "●" : "○"} ${row.name} · ${row.description}`.slice(0, 60),
+          callback_data: `f:${this.approvals.create({ requestId: `fast:${row.id}`, threadId: project.id, turnId: "fast-menu", itemId: row.id || "local" }, expiresAt)}`,
+        }]),
+      },
+    };
+  }
+
+  #permissionMenu(ownerId: number): { text: string; keyboard: InlineKeyboardMarkup } {
+    const project = this.projects.require(this.#activeProjectId());
+    const expiresAt = Date.now() + 10 * 60_000;
+    const regular = ["read-only", "workspace-write + on-request"] as const;
+    const keyboard: InlineKeyboardMarkup["inline_keyboard"] = regular.map((profile) => [{
+      text: `${project.permissionProfile === profile ? "●" : "○"} ${profile}`,
+      callback_data: `perm:${this.approvals.create({ requestId: `permission:${profile}`, threadId: project.id, turnId: "permission-menu", itemId: String(ownerId) }, expiresAt)}`,
+    }]);
+    if (this.config.allowDangerFullAccess) {
+      keyboard.push([{ text: `${project.permissionProfile === "danger-full-access" ? "●" : "○"} danger-full-access（15 分钟）`, callback_data: `danger:${this.approvals.create({ requestId: `danger:${project.id}:${ownerId}`, threadId: project.id, turnId: "permission", itemId: String(ownerId) }, expiresAt)}` }]);
+    }
+    return {
+      text: `<b>选择权限</b>\n当前：<code>${escapeHtml(project.permissionProfile)}</code>${this.config.allowDangerFullAccess ? "\n完全访问需再次确认且只生效十五分钟。" : "\n主机未启用完全访问。"}`,
+      keyboard: { inline_keyboard: keyboard },
+    };
+  }
+
+  #taskStateLabel(state: string): string {
+    return ({ queued: "排队中", running: "运行中", waiting_input: "等待输入", waiting_approval: "等待审批", completed: "已完成", failed: "失败", cancelled: "已取消", unknown: "待确认", received: "已接收" } as Record<string, string>)[state] ?? state;
+  }
+
+  #formatTime(value: number): string {
+    return new Date(value).toLocaleString("zh-CN", { hour12: false });
+  }
+
+  #projectMenu(): { text: string; keyboard: InlineKeyboardMarkup } {
+    const rows = this.database.connection
+      .prepare("SELECT id, name, normalized_root FROM projects WHERE enabled = 1 ORDER BY name")
+      .all() as Array<{ id: string; name: string; normalized_root: string }>;
+    if (rows.length === 0) {
+      return {
+        text: "尚未注册项目。请在主机执行 <code>ctb project add &lt;path&gt; --name &lt;name&gt;</code>。",
+        keyboard: { inline_keyboard: [] },
+      };
+    }
+    const active = this.#settings.get("active_project_id");
+    const expiresAt = Date.now() + 10 * 60_000;
+    return {
+      text: `<b>选择项目</b>\n当前：${escapeHtml(rows.find((row) => row.id === active)?.name ?? "未选择")}\n\n点击下方按钮切换；按钮十分钟内有效。`,
+      keyboard: {
+        inline_keyboard: rows.map((row) => [{
+          text: `${row.id === active ? "●" : "○"} ${row.name.slice(0, 40)} · ${shortProjectId(row.id)}`,
+          callback_data: `p:${this.approvals.create({ requestId: `project:${row.id}`, threadId: row.id, turnId: "project-menu", itemId: row.id }, expiresAt)}`,
+        }]),
+      },
+    };
+  }
+
   #helpText(): string {
-    return `<b>Codex Telegram Bridge</b>\n\n单用户、仅私聊；所有项目必须在主机预注册。Telegram Bot 私聊不是端到端加密渠道，请勿发送密钥或生产机密。\n\n/start /help /projects /project /new /sessions /resume /handback /tasks /cancel /retry /model /effort /permissions /status /ping /health /cleanup /update /version`;
+    return `<b>Codex Telegram Bridge</b>\n\n单用户、仅私聊；所有项目必须在主机预注册。Telegram Bot 私聊不是端到端加密渠道，请勿发送密钥或生产机密。\n\n${renderCommandHelp()}`;
   }
 }

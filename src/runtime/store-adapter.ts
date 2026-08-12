@@ -23,6 +23,7 @@ function mapProject(project: StorageProjectRecord): ProjectRecord {
     rootPath: project.normalizedRoot,
     defaultModel: project.defaultModel,
     defaultEffort: project.reasoningEffort,
+    serviceTier: project.serviceTier,
     permissionProfile: mapPermission(project.permissionProfile),
     enabled: project.enabled,
   };

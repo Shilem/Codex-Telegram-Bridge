@@ -58,6 +58,42 @@
 - 修复：权限检查按 `uname` 明确选择 stat 方言；移除仅用于便捷开发命令的 `tsx`，开发脚本改为先编译再运行，重新生成 shrinkwrap。
 - 验证：本机 Node 24 完整检查、Unix 发布测试和 `npm sbom --sbom-format cyclonedx` 通过；修复推送后重新等待三平台 CI。
 
+### macOS 1.0 LaunchAgent 无法启动 Codex App Server
+
+- 根因：服务启动器只用绝对路径执行 Bridge 的 Node 24，却没有把该 Node 目录写入 `PATH`。Homebrew 的 `codex` 启动脚本使用 `/usr/bin/env node`，而 launchd 默认 `PATH` 只有系统目录，因此 App Server 以退出码 127 终止。
+- 修复：Unix 服务启动器固定写入安装时验证过的 Node 与 Codex 可执行文件目录，再追加系统目录；不依赖交互式 shell 环境。
+- 验证：发布测试断言生成的启动器包含确定性 `PATH`；本机 LaunchAgent 日志不再出现 `env: node: No such file or directory`，并需通过 `ctb doctor`。
+
+### Telegram 命令菜单因语言代码无效而启动失败
+
+- 根因：首次实现 `setMyCommands` 时使用了区域代码 `zh-hans`，但 Telegram Bot API 的 `language_code` 只接受两位 ISO 639-1 代码，返回 `Bad Request: invalid language code specified`。
+- 修复：简体中文私聊命令菜单统一使用 Telegram 接受的 `zh`，命令描述通过 `Codex｜` 与 `Bridge｜` 前缀分组。
+- 验证：本机启动日志包含“Telegram 私聊命令菜单已同步”，LaunchAgent 保持运行，并在 Telegram `/` 菜单人工确认两组命令。
+
+### Telegram 中文命令菜单已同步但客户端不可见
+
+- 根因：服务只写入了 `language_code=zh` 的私聊菜单，Telegram 默认私聊菜单仍为空。客户端语言匹配并不保证使用 `zh` 这个精确语言代码，因此服务端已有二十条命令，用户端仍可能显示空菜单。
+- 修复：启动时先同步不带语言代码的默认私聊菜单，再同步 `zh` 中文私聊菜单；任何一步失败都明确中止启动并由服务管理器重试。
+- 验证：`getMyCommands` 对默认和 `zh` 两个作用域都返回二十条命令，随后在真实 Telegram 私聊中输入 `/` 验收。
+
+### Telegram 菜单同步无超时导致假运行
+
+- 根因：非长轮询 Telegram API 请求没有硬超时。服务启动时同步命令菜单若遇到连接不返回，Node 进程与 LaunchAgent 都显示运行，但服务尚未启动 App Server 和 `getUpdates`。
+- 修复：所有未显式传入取消信号的 Telegram API 单次请求增加二十秒硬超时，继续沿用有限次数重试；长轮询仍使用调用方 AbortSignal。命令菜单作为辅助能力改为后台同步，失败明确记录但不阻塞 App Server 与 long-poll，后续重启再次尝试。
+- 验证：超时请求记录 method、attempt 和错误，核心服务仍进入“已启动”状态并正常接收消息，不再无限卡住或呈现假健康。
+
+### 模型、推理强度和 Fast 状态没有跟随本机 Codex
+
+- 根因：模型列表虽来自 App Server，但“当前值”只读取项目数据库覆盖或目录默认项；未读取 `config/read` 的本机有效配置，也没有保存和传递 App Server 的 `serviceTier`。
+- 修复：菜单与 `/status` 按“项目覆盖 → 当前工作区的本机 Codex 配置 → 模型目录默认”解析有效状态；Fast 档位直接读取当前模型的 `serviceTiers`，项目级选择存入 SQLite 并传给 thread/turn。清除项目覆盖后恢复跟随本机。
+- 验证：交互测试覆盖本机模型、`low` 推理强度和 `default` 服务档位的展示；真实 App Server 合约检查确认本机 Fast 档位为 `priority`。
+
+### App Server 模型刷新超时只出现在原始 stderr
+
+- 根因：Codex App Server 的模型管理器会在后台刷新目录，超时仅通过 stderr 输出；桥接此前没有把它纳入健康状态，用户无法区分“实时目录正常”与“正在使用已有目录”。
+- 修复：模型状态组件跟踪最后一次成功 `model/list` 和最近一次刷新告警；`/health` 明确显示目录可用但刷新有告警。任务启动日志与进度卡记录最终模型、推理强度、服务档位及项目/本机来源。
+- 验证：单元测试覆盖本机配置、隐藏模型过滤、动态 Fast 档位和刷新告警；本机服务日志应出现模型目录读取成功，并在上游超时时保留结构化告警。
+
 ## 0.9 旧版历史（已由 1.0 后端移除）
 
 ### 已解决

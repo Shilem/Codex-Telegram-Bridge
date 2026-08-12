@@ -11,6 +11,7 @@ import type {
   SentMessage,
   TelegramUpdate,
 } from "./types.js";
+import type { TelegramBotCommand } from "./commands.js";
 
 interface TelegramEnvelope<T> {
   ok: boolean;
@@ -49,12 +50,13 @@ export class TelegramApi {
     const attempts = options.attempts ?? 3;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const startedAt = performance.now();
+      const requestSignal = options.signal ?? AbortSignal.timeout(20_000);
       try {
         const requestInit: RequestInit = {
           method: "POST",
           body: body instanceof FormData ? body : JSON.stringify(body),
           ...(body instanceof FormData ? {} : { headers: { "content-type": "application/json" } }),
-          ...(options.signal ? { signal: options.signal } : {}),
+          signal: requestSignal,
         };
         const response = await fetch(`${this.#apiBase}/${method}`, requestInit);
         const envelope = (await response.json()) as TelegramEnvelope<T>;
@@ -94,6 +96,15 @@ export class TelegramApi {
       },
       { signal, attempts: 1 },
     );
+  }
+
+  public async setCommands(commands: readonly TelegramBotCommand[]): Promise<void> {
+    const body = {
+      commands,
+      scope: { type: "all_private_chats" },
+    };
+    await this.#request<boolean>("setMyCommands", body);
+    await this.#request<boolean>("setMyCommands", { ...body, language_code: "zh" });
   }
 
   public sendMessage(

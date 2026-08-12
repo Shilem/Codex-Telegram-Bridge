@@ -1,0 +1,99 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { BridgeConfig } from "../../src/core/config.js";
+import { RuntimeSettings } from "../../src/runtime/settings.js";
+import { ApprovalManager, AuditLog, PairingService, PermissionLeaseManager, ProjectRegistry } from "../../src/security/index.js";
+import { BridgeDatabase, TaskLedger } from "../../src/storage/index.js";
+import type { TelegramApi } from "../../src/telegram/api.js";
+import { TelegramController } from "../../src/telegram/controller.js";
+import type { TelegramMessage } from "../../src/telegram/types.js";
+
+const databases: BridgeDatabase[] = [];
+
+afterEach(() => {
+  for (const database of databases.splice(0)) database.close();
+});
+
+describe("Telegram 交互式管理菜单", () => {
+  it("通过 project 按钮切换项目，并为其他管理能力生成按钮", async () => {
+    const database = new BridgeDatabase(":memory:");
+    databases.push(database);
+    const pairing = new PairingService(database);
+    const code = pairing.requestCode("10", "10", "private");
+    const owner = pairing.confirmCode(code);
+    const projects = new ProjectRegistry(database);
+    const first = projects.register(mkdtempSync(path.join(tmpdir(), "ctb-first-")), "First");
+    const second = projects.register(mkdtempSync(path.join(tmpdir(), "ctb-second-")), "Second");
+    new RuntimeSettings(database).set("active_project_id", first.id);
+    const tasks = new TaskLedger(database);
+    tasks.ingestTelegramTask({ updateId: 1, messageId: 1, projectId: first.id, body: "test" });
+    database.connection.prepare("INSERT INTO threads(id, project_id, codex_thread_id, permission_profile, closed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run("session-12345678", first.id, "codex-thread", "workspace-write + on-request", Date.now(), Date.now(), Date.now());
+
+    const sent: Array<{ text: string; markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } }> = [];
+    const edited: typeof sent = [];
+    const api = {
+      sendMessage: vi.fn((_chatId: number, text: string, markup?: typeof sent[number]["markup"]) => {
+        sent.push({ text, ...(markup ? { markup } : {}) });
+        return Promise.resolve({ message_id: sent.length, chat: { id: 10, type: "private" }, date: Math.floor(Date.now() / 1000) });
+      }),
+      editMessage: vi.fn((_chatId: number, _messageId: number, text: string, markup?: typeof sent[number]["markup"]) => {
+        edited.push({ text, ...(markup ? { markup } : {}) });
+        return Promise.resolve({ message_id: 1, chat: { id: 10, type: "private" }, date: Math.floor(Date.now() / 1000) });
+      }),
+      answerCallback: vi.fn(() => Promise.resolve(true)),
+    } as unknown as TelegramApi;
+    const approvals = new ApprovalManager(database, Buffer.alloc(32, 1));
+    const controller = new TelegramController(
+      api,
+      database,
+      tasks,
+      pairing,
+      projects,
+      new PermissionLeaseManager(database),
+      approvals,
+      new AuditLog(database, Buffer.alloc(16, 2)),
+      { currentTask: null, cancel: vi.fn(), wake: vi.fn() } as never,
+      { cleanup: vi.fn(() => Promise.resolve({ attachments: 0, artifacts: 0 })) } as never,
+      { setChatId: vi.fn(), answerTextInput: vi.fn(() => false), attachProgress: vi.fn() } as never,
+      { render: vi.fn(() => Promise.resolve("健康")) },
+      {
+        list: vi.fn(() => Promise.resolve([{ id: "gpt", model: "gpt-test", displayName: "GPT Test", description: "test", hidden: false, isDefault: true, defaultReasoningEffort: "medium", supportedReasoningEfforts: [{ reasoningEffort: "low", description: "低" }, { reasoningEffort: "medium", description: "中" }], serviceTiers: [{ id: "priority", name: "Fast", description: "1.5x speed" }], defaultServiceTier: "priority" }])),
+        localState: vi.fn(() => Promise.resolve({ model: "gpt-test", reasoningEffort: "low", serviceTier: "default" })),
+      },
+      null,
+      { allowDangerFullAccess: false, attachmentRetentionHours: 24, taskRetentionDays: 7, auditRetentionDays: 30 } as BridgeConfig,
+      { error: vi.fn() } as never,
+    );
+    let updateId = 10;
+    const command = async (text: string): Promise<void> => {
+      const message: TelegramMessage = { message_id: updateId, date: Math.floor(Date.now() / 1000), chat: { id: 10, type: "private" }, from: { id: 10, is_bot: false, first_name: "Owner" }, text };
+      await controller.handle({ update_id: updateId++, message });
+    };
+
+    await command("/project");
+    expect(sent.at(-1)?.markup?.inline_keyboard).toHaveLength(2);
+    const secondButton = sent.at(-1)?.markup?.inline_keyboard[1]?.[0];
+    expect(secondButton?.text).toContain("Second");
+    if (!secondButton) throw new Error("缺少 Second 项目按钮");
+    await controller.handle({ update_id: updateId++, callback_query: { id: "cb", from: { id: 10, is_bot: false, first_name: "Owner" }, message: { message_id: 1, date: Math.floor(Date.now() / 1000), chat: { id: 10, type: "private" } }, data: secondButton.callback_data } });
+    expect(new RuntimeSettings(database).get("active_project_id")).toBe(second.id);
+    expect(edited.at(-1)?.text).toContain("Second");
+
+    new RuntimeSettings(database).set("active_project_id", first.id);
+    for (const text of ["/tasks", "/sessions", "/model", "/effort", "/fast", "/permissions", "/cleanup"]) {
+      await command(text);
+      expect(sent.at(-1)?.markup?.inline_keyboard.length).toBeGreaterThan(0);
+    }
+    expect(sent.find((item) => item.text.includes("选择模型"))?.text).toContain("选择模型");
+    expect(sent.find((item) => item.text.includes("选择模型"))?.text).toContain("本机：gpt-test");
+    expect(sent.find((item) => item.text.includes("选择推理强度"))?.text).toContain("本机：low");
+    expect(sent.find((item) => item.text.includes("选择 Fast 模式"))?.text).toContain("本机：default");
+    expect(sent.find((item) => item.text.includes("确认本地清理"))?.text).toContain("不会删除项目源码");
+    expect(owner.id).toBe(1);
+  });
+});
