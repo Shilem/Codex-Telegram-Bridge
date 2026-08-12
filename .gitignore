@@ -1,9 +1,17 @@
 # Secrets and host-local state
 .env
 *.env
+node_modules/
+dist/
+coverage/
+*.db
+*.db-shm
+*.db-wal
+*.log
+.ctb-state/
 !.env.example
-state/
-runtime/
+/state/
+/runtime/
 *.log
 
 # Python and tooling

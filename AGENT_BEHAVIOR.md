@@ -1,12 +1,14 @@
 # Agent 行为规范
 
-- 所有用户可见提示使用简体中文；机密仅存在于主机本地配置。
-- 不吞掉桥接、Telegram、tmux 或 Codex 错误：记录带耗时和上下文的日志并明确回报失败。
-- `/ping` 是桥接健康检查，不应归因于模型速度；先检查 `telegram_age_ms`、`sendMessage elapsed_ms` 和 `POLL`。
-- 不转发会终止远程控制面的 `/exit`、`/quit`。
-- 安装或更新不得覆盖现有 `~/.config/telegram-agent-bridge.env`。
-- Linux 使用 systemd user service，macOS 使用 `com.codex-telegram-bridge.codex` LaunchAgent；修改安装流程时两个平台都要验证。
-- macOS LaunchAgent 不继承交互式 shell 的 Homebrew 路径；启动器必须显式包含安装时解析到的 Python、tmux 和 Codex CLI 目录。
-- 新建 Codex TUI 在首次提交任务前可能没有 JSONL；服务应记录等待状态并保持运行，不能把该预期状态伪装成成功或因它退出。
-- 每个实例必须使用独立 Telegram Bot；不得建议共享 Token 的多实例长轮询。
-- 变更核心桥接逻辑前，先建立 Git 分支；更新本文件、`BUG_LOG.md` 与安装说明。
+- 所有用户可见提示和项目文档使用简体中文；Bot Token、所有者标识和生产配置只存在于主机本地。
+- 运行架构固定为 Node.js 24 + TypeScript + Codex App Server stdio JSON-RPC + SQLite WAL。不得重新引入 tmux、屏幕解析、JSONL 猜测或无沙箱 exec 后端。
+- 开始任务前阅读本文件和 `BUG_LOG.md`；关键技术栈、协议或产品边界变化时同步更新 `AGENTS.md`、`CLAUDE.md` 和相关文档。
+- 不吞掉 Telegram、App Server、SQLite、安装或更新错误。关键路径记录 `updateId/taskId/threadId/turnId/requestId`、耗时和脱敏结果，用户错误必须说明原因、影响和下一步。
+- 绝不记录 Bot Token、任务正文、命令全文、diff、附件内容或用户/聊天原始 ID；审计使用加盐指纹和脱敏元数据。
+- 所有 Telegram update、任务创建和任务状态迁移必须保持事务语义；崩溃后的运行中任务标记为 `unknown`，不得自动重放。
+- 普通消息、附件和 callback 统一要求 private chat、已配对 owner user ID、已配对 private chat ID；所有 callback 必须使用一次性、限时且绑定上下文的签名 nonce。
+- 默认权限是 `workspace-write + on-request`。完全访问必须由主机显式启用、Telegram 二次确认并限制当前项目十五分钟；到期不接受新危险任务。
+- 项目路径和回传文件必须以 realpath 验证在预注册根目录或专用产物目录内；拒绝符号链接逃逸。
+- `/ping` 只检查 Telegram 收发延迟；`/health` 才检查 App Server、Codex 登录、数据库、项目、磁盘和最近错误。
+- 每个实例必须使用独立 Bot；不得建议多个 long-poll 消费者共享 Token。
+- 大规模重构、实验性协议变更或上游升级先建分支。提交前运行 `npm run check` 和发布层测试。

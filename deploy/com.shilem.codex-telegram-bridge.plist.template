@@ -3,17 +3,29 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.codex-telegram-bridge.codex</string>
+  <string>com.shilem.codex-telegram-bridge</string>
   <key>ProgramArguments</key>
   <array>
     <string>__RUNNER__</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CTB_CONFIG_FILE</key>
+    <string>__CONFIG_FILE__</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>ProcessType</key>
   <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>Umask</key>
+  <integer>63</integer>
   <key>StandardOutPath</key>
   <string>__LOG_DIR__/bridge.log</string>
   <key>StandardErrorPath</key>
