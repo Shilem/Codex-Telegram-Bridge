@@ -1,0 +1,16 @@
+# Secrets and host-local state
+.env
+*.env
+!.env.example
+state/
+runtime/
+*.log
+
+# Python and tooling
+__pycache__/
+*.py[cod]
+.venv/
+.codegraph/
+
+# Editor / OS
+.DS_Store

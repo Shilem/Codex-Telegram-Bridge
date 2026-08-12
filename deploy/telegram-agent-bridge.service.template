@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Agent Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=__HOME__/.local/bin/telegram-agent-bridge-run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
