@@ -4,6 +4,12 @@
 
 ## 1.0 架构修复
 
+### npm 自动发布被 2FA 与私有仓库 provenance 拒绝
+
+- 根因：首次发布使用普通登录令牌，无法满足 npm 的自动发布 2FA 要求；切换 Granular Token 后，私有 GitHub 仓库又不满足公开包 provenance 的来源可见性要求。
+- 修复：完成全历史隐私检查后将源码仓库公开；首次发布使用带 2FA bypass 的最小权限令牌；发布成功后建立绑定仓库、`release.yml` 和 `release` environment 的 OIDC Trusted Publisher，删除长期 `NPM_TOKEN` 及工作流引用。
+- 验证：`v1.0.0` npm provenance 与 GitHub Release 成功；release environment 仅保留签名私钥，后续发布通过 OIDC 获取短期凭证。
+
 ### npm 包名与既有第三方包冲突
 
 - 根因：无作用域包名 `codex-telegram-bridge` 已由其他 npm 账号持有，当前发布账号无法发布 1.0.0；若继续沿用还会让用户误装第三方旧包。

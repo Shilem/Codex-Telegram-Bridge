@@ -57,8 +57,6 @@ jobs:
           sha256sum "$ARCHIVE" codex-telegram-bridge.cdx.json release-manifest.json release-manifest.sig > SHA256SUMS
           rm signing-key.pem
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
