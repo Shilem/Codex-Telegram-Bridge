@@ -10,5 +10,9 @@
   "attachmentRetentionHours": 24,
   "taskRetentionDays": 7,
   "auditRetentionDays": 30,
-  "logLevel": "info"
+  "logLevel": "info",
+  "updateManifestUrl": "https://github.com/Shilem/Codex-Telegram-Bridge/releases/latest/download/release-manifest.json",
+  "updateSignatureUrl": "https://github.com/Shilem/Codex-Telegram-Bridge/releases/latest/download/release-manifest.sig",
+  "updateArchiveUrl": "https://github.com/Shilem/Codex-Telegram-Bridge/releases/latest/download/codex-telegram-bridge.tgz",
+  "updatePublicKeyFile": "update-public-key.pem"
 }

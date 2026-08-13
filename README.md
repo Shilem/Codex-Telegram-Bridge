@@ -2,6 +2,14 @@
 
 Codex Telegram Bridge 是一个单用户、自托管的 Codex 远程开发客户端。它通过 Telegram Bot 私聊接收任务，并直接使用本机 `codex app-server --listen stdio://` 的结构化 JSON-RPC 协议；不开放公网端口，不依赖 tmux、终端截图或 JSONL 会话猜测。
 
+官方 npm 包使用个人作用域发布，避免与 npm 上已有的同名第三方包混淆：
+
+```bash
+npm install --global @shilem/codex-telegram-bridge
+```
+
+安装后的命令仍为 `ctb` 与 `ctb-service`，本机服务标识和数据目录名称保持不变。
+
 > Telegram Bot 私聊不是端到端加密渠道。不要发送 API Key、密码、生产凭据或其他机密。
 
 ## 1.0 能力

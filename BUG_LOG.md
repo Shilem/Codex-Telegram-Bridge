@@ -4,6 +4,24 @@
 
 ## 1.0 架构修复
 
+### npm 包名与既有第三方包冲突
+
+- 根因：无作用域包名 `codex-telegram-bridge` 已由其他 npm 账号持有，当前发布账号无法发布 1.0.0；若继续沿用还会让用户误装第三方旧包。
+- 修复：官方 npm 包改为 `@shilem/codex-telegram-bridge`；CLI 名称、服务标识和本机数据目录保持兼容。
+- 验证：完整检查和发布层测试通过，`npm pack` 产物元数据必须显示作用域包名，随后由签名 Release 工作流发布。
+
+### 版本化 npm 归档名无法作为稳定更新地址
+
+- 根因：作用域 npm 包每个版本生成不同的 tgz 文件名，而客户端配置使用固定 `releases/latest/download` URL；直接引用版本化文件会让旧安装无法发现下一版。
+- 修复：npm 继续发布原生作用域包，GitHub Release 额外统一输出 `codex-telegram-bridge.tgz`；签名清单、SHA-256 和安装器均以该稳定产物为准。安装时同时部署仓库内公钥和默认 HTTPS 更新源。
+- 验证：发布工作流断言锁文件已注入固定归档，安装器测试覆盖公钥复制及更新配置。
+
+### Windows 发布测试夹具缺少 deploy 目录
+
+- 根因：Windows 安装器新增公钥部署后，测试夹具仍只复制 `scripts` 和 `dist`，与真实 npm 包结构不一致，导致 CI 找不到 `deploy/update-public-key.pem`。
+- 修复：Windows 发布测试构造完整的 `deploy` 夹具，并断言公钥文件与更新配置均正确安装。
+- 验证：PR 的 Windows Node.js 24 发布任务通过。
+
 ### 群聊成员可操作任务与审批
 
 - 根因：旧版只比较 `chat.id`，callback 未统一检查 `from.id` 和 `chat.type`。

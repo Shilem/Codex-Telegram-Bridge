@@ -37,6 +37,10 @@ STAGE_DIR="$INSTALL_ROOT/versions/.staging-$VERSION-$$"
 ctb_assert_safe_root "$STAGE_DIR"
 
 mkdir -p "$INSTALL_ROOT/versions" "$CONFIG_DIR" "$STATE_DIR/artifacts" "$BIN_DIR"
+if [ ! -f "$CONFIG_DIR/update-public-key.pem" ]; then
+  cp "$REPO_ROOT/deploy/update-public-key.pem" "$CONFIG_DIR/update-public-key.pem"
+  chmod 644 "$CONFIG_DIR/update-public-key.pem"
+fi
 cleanup_stage() { [ ! -d "$STAGE_DIR" ] || rm -rf -- "$STAGE_DIR"; }
 trap cleanup_stage EXIT
 
