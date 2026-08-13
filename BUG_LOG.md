@@ -16,6 +16,12 @@
 - 修复：npm 继续发布原生作用域包，GitHub Release 额外统一输出 `codex-telegram-bridge.tgz`；签名清单、SHA-256 和安装器均以该稳定产物为准。安装时同时部署仓库内公钥和默认 HTTPS 更新源。
 - 验证：发布工作流断言锁文件已注入固定归档，安装器测试覆盖公钥复制及更新配置。
 
+### Windows 发布测试夹具缺少 deploy 目录
+
+- 根因：Windows 安装器新增公钥部署后，测试夹具仍只复制 `scripts` 和 `dist`，与真实 npm 包结构不一致，导致 CI 找不到 `deploy/update-public-key.pem`。
+- 修复：Windows 发布测试构造完整的 `deploy` 夹具，并断言公钥文件与更新配置均正确安装。
+- 验证：PR 的 Windows Node.js 24 发布任务通过。
+
 ### 群聊成员可操作任务与审批
 
 - 根因：旧版只比较 `chat.id`，callback 未统一检查 `from.id` 和 `chat.type`。
