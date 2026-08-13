@@ -23,6 +23,8 @@ CI 在 macOS、Ubuntu 和 Windows 的 Node.js 24 上运行类型检查、lint、
 
 签名私钥只能存在于受保护的 GitHub release environment；仓库只发布公钥。更新器必须验证 HTTPS、签名、产物名、SHA-256 和版本递增。
 
+npm 发布使用绑定 `Shilem/Codex-Telegram-Bridge`、`release.yml` 与 `release` environment 的 Trusted Publisher，通过 GitHub Actions OIDC 获取短期凭证。不得重新引入长期 `NPM_TOKEN`。
+
 官方 npm 包名为 `@shilem/codex-telegram-bridge`。GitHub Release 的安装归档固定命名为 `codex-telegram-bridge.tgz`，使已安装客户端可以通过稳定的 `releases/latest/download` 地址获取后续签名版本。
 
 ## 候选版本人工验收
