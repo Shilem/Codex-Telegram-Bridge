@@ -29,6 +29,8 @@ $versionRoot = Join-Path $InstallRoot "versions"
 $versionDir = Join-Path $versionRoot $Version
 $stage = Join-Path $versionRoot ".staging-$Version-$PID"
 New-Item -ItemType Directory -Force -Path $versionRoot,$ConfigDir,(Join-Path $StateDir "artifacts") | Out-Null
+$updatePublicKey = Join-Path $ConfigDir "update-public-key.pem"
+if (-not (Test-Path $updatePublicKey)) { Copy-Item (Join-Path $PackageDir "deploy\update-public-key.pem") $updatePublicKey }
 if (Test-Path $versionDir) { Fail "版本目录已存在，拒绝覆盖：$versionDir" }
 try {
   if (-not (Test-Path (Join-Path $PackageDir "dist"))) {
@@ -62,7 +64,7 @@ if (Test-Path $pointer) { [IO.File]::Replace($pointerTmp,$pointer,$null) } else 
 $configFile = Join-Path $ConfigDir "config.json"
 $tokenFile = Join-Path $ConfigDir "bot-token"
 if (-not (Test-Path $configFile)) {
-  $config = [ordered]@{ botTokenFile="bot-token"; stateDirectory=$StateDir; artifactDirectory=(Join-Path $StateDir "artifacts"); codexExecutable=$CodexPath; allowDangerFullAccess=$false; inboundFileLimitBytes=20971520; outboundFileLimitBytes=52428800; maxUpdateAgeMinutes=10; attachmentRetentionHours=24; taskRetentionDays=7; auditRetentionDays=30; logLevel="info" }
+  $config = [ordered]@{ botTokenFile="bot-token"; stateDirectory=$StateDir; artifactDirectory=(Join-Path $StateDir "artifacts"); codexExecutable=$CodexPath; allowDangerFullAccess=$false; inboundFileLimitBytes=20971520; outboundFileLimitBytes=52428800; maxUpdateAgeMinutes=10; attachmentRetentionHours=24; taskRetentionDays=7; auditRetentionDays=30; logLevel="info"; updateManifestUrl="https://github.com/Shilem/Codex-Telegram-Bridge/releases/latest/download/release-manifest.json"; updateSignatureUrl="https://github.com/Shilem/Codex-Telegram-Bridge/releases/latest/download/release-manifest.sig"; updateArchiveUrl="https://github.com/Shilem/Codex-Telegram-Bridge/releases/latest/download/codex-telegram-bridge.tgz"; updatePublicKeyFile="update-public-key.pem" }
   WriteUtf8NoBom $configFile ($config | ConvertTo-Json)
 }
 if (-not (Test-Path $tokenFile)) { WriteUtf8NoBom $tokenFile ""; Write-Host "请将 Bot Token 写入 $tokenFile" }

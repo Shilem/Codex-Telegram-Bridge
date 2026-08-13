@@ -27,7 +27,7 @@ jobs:
         env:
           TAG_VERSION: ${{ github.ref_name }}
         run: |
-          node -e 'const fs=require("fs");const expected=process.env.TAG_VERSION.replace(/^v/,"");const p=require("./package.json").version;const files=["src/service.ts","src/cli.ts"];if(p!==expected||files.some(f=>!fs.readFileSync(f,"utf8").includes(`\"${expected}\"`))){throw new Error(`版本不一致 tag=${expected} package=${p}`)}'
+          node -e 'const fs=require("fs");const expected=process.env.TAG_VERSION.replace(/^v/,"");const pkg=require("./package.json");const files=["src/service.ts","src/cli.ts"];if(pkg.name!=="@shilem/codex-telegram-bridge"||pkg.version!==expected||files.some(f=>!fs.readFileSync(f,"utf8").includes(`\"${expected}\"`))){throw new Error(`发布元数据不一致 tag=${expected} package=${pkg.name}@${pkg.version}`)}'
       - run: npm audit --audit-level=high
       - run: npm sbom --sbom-format cyclonedx > codex-telegram-bridge.cdx.json
       - id: pack
@@ -41,9 +41,10 @@ jobs:
           cp npm-shrinkwrap.json release-package/package/npm-shrinkwrap.json
           tar -czf "$ARCHIVE" -C release-package package
           tar -tzf "$ARCHIVE" | grep -Fx 'package/npm-shrinkwrap.json'
+          cp "$ARCHIVE" codex-telegram-bridge.tgz
       - name: 生成签名清单
         env:
-          ARCHIVE: ${{ steps.pack.outputs.archive }}
+          ARCHIVE: codex-telegram-bridge.tgz
           VERSION: ${{ github.ref_name }}
           CTB_RELEASE_SIGNING_KEY: ${{ secrets.CTB_RELEASE_SIGNING_KEY }}
         run: |
@@ -61,7 +62,7 @@ jobs:
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
-            ${{ steps.pack.outputs.archive }}
+            codex-telegram-bridge.tgz
             codex-telegram-bridge.cdx.json
             release-manifest.json
             release-manifest.sig

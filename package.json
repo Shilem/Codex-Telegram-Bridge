@@ -1,5 +1,5 @@
 {
-  "name": "codex-telegram-bridge",
+  "name": "@shilem/codex-telegram-bridge",
   "version": "1.0.0",
   "description": "通过 Telegram 私聊安全控制本机 Codex App Server",
   "type": "module",
