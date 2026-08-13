@@ -4,6 +4,12 @@
 
 ## 1.0 架构修复
 
+### README 的首次安装路径无法闭环
+
+- 根因：旧 README 先建议全局安装 npm 包，随后直接执行仓库内的 `./scripts/install.sh`，却没有说明如何获取仓库；Bot 创建、Token 写入、服务启动和 CLI 路径也分散在不同章节。
+- 修复：README 改为从 GitHub 标签运行三平台安装器的单一路径，补充 BotFather、Token 文件、服务启动、Unix PATH 和 Windows CLI 脚本说明；高级状态机和架构术语移到日常操作之后。
+- 验证：逐项核对 CLI 与安装器实现，检查本地文档链接、完整测试和三平台发布测试。
+
 ### npm 自动发布被 2FA 与私有仓库 provenance 拒绝
 
 - 根因：首次发布使用普通登录令牌，无法满足 npm 的自动发布 2FA 要求；切换 Granular Token 后，私有 GitHub 仓库又不满足公开包 provenance 的来源可见性要求。
