@@ -22,7 +22,7 @@ import { TelegramController, type HealthProvider } from "./telegram/controller.j
 import { TelegramInteractiveGateway } from "./telegram/gateway.js";
 import { UpdateManager } from "./update/manager.js";
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 process.umask(0o077);
 
 function renderModelCatalogHealth(health: ReturnType<CodexModelStateProvider["health"]>): string {
