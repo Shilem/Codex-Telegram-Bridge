@@ -219,7 +219,7 @@ Plan 依赖 Codex App Server 提供 Plan/Default 协作模式。若当前 Codex 
 
 项目没有单独设置时，Bridge 会优先读取当前工作区的本机 Codex 配置。切换模型后，项目级思考深度和 Fast 覆盖会被清除，避免保留不兼容的组合。
 
-`/quota` 直接读取 Codex 账户的额度信息，包括剩余比例、额度窗口和重置时间。上游没有返回的字段会显示“未提供”，Bridge 不会自行推算。
+`/quota` 会先判断当前登录是 ChatGPT、API Key 还是 Amazon Bedrock。ChatGPT 账户按套餐展示额度；Enterprise 会显示月度额度、已用点数和重置时间，其他套餐展示 App Server 返回的时间窗口。API Key 和 Bedrock 的用量不属于 ChatGPT 额度接口，Bot 会提示去对应平台查看。上游没有返回的数值不会由 Bridge 自行推算。
 
 ### 权限
 

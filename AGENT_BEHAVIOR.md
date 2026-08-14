@@ -11,5 +11,6 @@
 - 默认权限是 `workspace-write + on-request`。完全访问必须由主机显式启用、Telegram 二次确认并限制当前项目十五分钟；到期不接受新危险任务。
 - 项目路径和回传文件必须以 realpath 验证在预注册根目录或专用产物目录内；拒绝符号链接逃逸。
 - `/ping` 只检查 Telegram 收发延迟；`/health` 才检查 App Server、Codex 登录、数据库、项目、磁盘和最近错误。
+- `/quota` 必须先用 `account/read` 判断账户类型。ChatGPT Enterprise 的月度额度读取 `individualLimit`；普通窗口读取 `primary/secondary`。API Key 和 Bedrock 不调用 ChatGPT 额度接口，任何缺失数值都不得本地估算。
 - 每个实例必须使用独立 Bot；不得建议多个 long-poll 消费者共享 Token。
 - 大规模重构、实验性协议变更或上游升级先建分支。提交前运行 `npm run check` 和发布层测试。
