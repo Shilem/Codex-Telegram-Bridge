@@ -17,7 +17,7 @@ afterEach(async () => {
 async function fixture(scriptBody: string): Promise<{ file: string; action: UpdateAction }> {
   const directory = await mkdtemp(join(tmpdir(), "ctb-update-worker-"));
   directories.push(directory);
-  const script = join(directory, "update.sh");
+  const script = join(directory, "update.mjs");
   const file = join(directory, "state", "update-actions", "ctb-update-00000000-0000-0000-0000-000000000000.json");
   await writeFile(script, scriptBody, { mode: 0o700 });
   const action: UpdateAction = {
@@ -30,7 +30,7 @@ async function fixture(scriptBody: string): Promise<{ file: string; action: Upda
     createdAt: Date.now(),
     updatedAt: Date.now(),
     status: "pending",
-    command: { executable: "/bin/bash", args: [script], environment: { PATH: "/usr/bin:/bin" } },
+    command: { executable: process.execPath, args: [script], environment: {} },
   };
   await writeUpdateAction(file, action);
   return { file, action };
@@ -39,7 +39,7 @@ async function fixture(scriptBody: string): Promise<{ file: string; action: Upda
 describe("独立更新 worker", () => {
   it("原子记录成功终态", async () => {
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    const { file } = await fixture("echo update-ok\n");
+    const { file } = await fixture("process.stdout.write('update-ok\\n');\n");
     await expect(runUpdateWorker(file)).resolves.toBe(0);
     await expect(readUpdateAction(file)).resolves.toMatchObject({
       status: "succeeded",
@@ -49,7 +49,7 @@ describe("独立更新 worker", () => {
 
   it("保留明确错误并区分自动回滚", async () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const { file } = await fixture("echo '[ctb] 错误：健康检查失败，已回滚到 1.0.0' >&2\nexit 1\n");
+    const { file } = await fixture("process.stderr.write('[ctb] 错误：健康检查失败，已回滚到 1.0.0\\n');\nprocess.exit(1);\n");
     await expect(runUpdateWorker(file)).resolves.toBe(1);
     await expect(readUpdateAction(file)).resolves.toMatchObject({
       status: "rolled_back",

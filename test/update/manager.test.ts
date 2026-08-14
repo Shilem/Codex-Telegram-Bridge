@@ -82,7 +82,7 @@ describe("UpdateManager", () => {
     expect(launched).toHaveLength(1);
     expect(launched[0]?.command).toBe("systemd-run");
     expect(launched[0]?.args).toContain("/opt/node24/bin/node");
-    expect(launched[0]?.args.some((value) => value.endsWith("/dist/update/worker.js"))).toBe(true);
+    expect(launched[0]?.args.some((value) => value.replaceAll("\\", "/").endsWith("/dist/update/worker.js"))).toBe(true);
     expect(action.command.environment).toMatchObject({
       CTB_NODE_BIN: "/opt/node24/bin/node",
       CTB_CODEX_BIN: "/opt/codex/bin/codex",
