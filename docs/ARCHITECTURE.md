@@ -13,7 +13,7 @@ Codex Telegram Bridge 1.0 是单用户、单 Bot、自托管的远程开发客�
 - `src/scheduler/`：全局 FIFO 单任务队列。
 - `src/orchestrator/`：把任务映射为 App Server thread/turn，把公开事件映射到 Telegram。
 - `src/media/`：媒体隔离、magic 检测、回传边界和保留清理。
-- `src/update/`：签名清单、版本递增检查和原子更新启动。
+- `src/update/`：签名清单、版本递增检查、权限受限的持久化更新动作和独立 worker。worker 由当前 Node.js 24 绝对路径启动，只向安装脚本传递白名单环境，并原子记录成功、失败或自动回滚结果；Bridge 重启后恢复未通知动作并回写原 Telegram 消息。
 - `src/cli.ts`：仅主机可执行的配对、项目、doctor、迁移、更新、回滚和卸载。
 
 ## 数据流

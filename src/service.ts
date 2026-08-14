@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { statfs } from "node:fs/promises";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { AppServerClient, CodexModelStateProvider, CodexRateLimitProvider, ProcessAppServerTransport } from "./app-server/index.js";
-import { loadConfig, readBotToken } from "./core/config.js";
+import { defaultRuntimePaths, loadConfig, readBotToken } from "./core/config.js";
 import { acquireInstanceLock } from "./core/instance-lock.js";
 import { createLogger } from "./core/logger.js";
 import { errorMessage } from "./core/types.js";
@@ -22,7 +24,7 @@ import { TelegramController, type HealthProvider } from "./telegram/controller.j
 import { TelegramInteractiveGateway } from "./telegram/gateway.js";
 import { UpdateManager } from "./update/manager.js";
 
-const VERSION = "1.1.0";
+const VERSION = "1.1.1";
 process.umask(0o077);
 
 function renderModelCatalogHealth(health: ReturnType<CodexModelStateProvider["health"]>): string {
@@ -34,7 +36,8 @@ function renderModelCatalogHealth(health: ReturnType<CodexModelStateProvider["he
 }
 
 async function main(): Promise<void> {
-  const config = await loadConfig();
+  const runtimePaths = defaultRuntimePaths();
+  const config = await loadConfig(runtimePaths.configFile);
   const logger = createLogger(config.logLevel);
   const releaseLock = await acquireInstanceLock(join(config.stateDirectory, "service.lock"));
   const database = new BridgeDatabase(join(config.stateDirectory, "bridge.db"));
@@ -132,13 +135,26 @@ async function main(): Promise<void> {
     },
   };
   const updates = config.updateManifestUrl && config.updateSignatureUrl && config.updateArchiveUrl && config.updatePublicKeyFile
-    ? new UpdateManager({
+    ? new UpdateManager((() => {
+        const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+        const inferredInstallRoot = basename(dirname(packageRoot)) === "versions"
+          ? resolve(packageRoot, "..", "..")
+          : packageRoot;
+        const installRoot = process.env.CTB_INSTALL_ROOT ?? inferredInstallRoot;
+        const binDirectory = process.env.CTB_BIN_DIR ?? (process.platform === "win32" ? installRoot : join(homedir(), ".local", "bin"));
+        return {
         currentVersion: VERSION,
         manifestUrl: config.updateManifestUrl,
         signatureUrl: config.updateSignatureUrl,
         archiveUrl: config.updateArchiveUrl,
         publicKeyFile: config.updatePublicKeyFile,
-      }, logger)
+          stateDirectory: config.stateDirectory,
+          configFile: runtimePaths.configFile,
+          codexExecutable: config.codexExecutable,
+          installRoot,
+          binDirectory,
+        };
+      })(), logger)
     : null;
   const controller = new TelegramController(
     telegram,
@@ -159,6 +175,9 @@ async function main(): Promise<void> {
     config,
     logger,
   );
+  void controller.resumePendingUpdateNotifications().catch((error: unknown) => {
+    logger.error({ error: errorMessage(error) }, "恢复更新终态通知失败；动作文件已保留供下次启动重试");
+  });
   const settings = new RuntimeSettings(database);
   const abortController = new AbortController();
   const cleanupTimer = setInterval(() => {

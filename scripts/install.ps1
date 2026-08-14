@@ -77,6 +77,12 @@ $nodePathLiteral = QuotePs $NodePath
 `$ErrorActionPreference = "Stop"
 `$versionDir = (Get-Content -Raw (Join-Path $installRootLiteral 'current')).Trim()
 `$env:CTB_CONFIG_FILE = $configFileLiteral
+`$env:CTB_CONFIG_DIR = $(QuotePs $ConfigDir)
+`$env:CTB_STATE_DIR = $(QuotePs $StateDir)
+`$env:CTB_INSTALL_ROOT = $installRootLiteral
+`$env:CTB_BIN_DIR = $installRootLiteral
+`$env:CTB_NODE_BIN = $nodePathLiteral
+`$env:CTB_CODEX_BIN = $(QuotePs $CodexPath)
 & $nodePathLiteral (Join-Path `$versionDir 'dist\service.js')
 exit `$LASTEXITCODE
 "@ | Set-Content -Encoding utf8 $runner

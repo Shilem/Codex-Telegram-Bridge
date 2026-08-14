@@ -48,6 +48,11 @@ assert_file "$TMP/config/config.json"
 assert_file "$TMP/config/bot-token"
 assert_file "$TMP/config/update-public-key.pem"
 assert_contains "$TMP/user-bin/ctb-service-run" "export PATH=\"$TMP/bin:$TMP/bin:/usr/bin:/bin:/usr/sbin:/sbin\""
+assert_contains "$TMP/user-bin/ctb-service-run" "export CTB_NODE_BIN=\"$TMP/bin/node24\""
+assert_contains "$TMP/user-bin/ctb-service-run" "export CTB_CODEX_BIN=\"$TMP/bin/codex\""
+assert_contains "$TMP/user-bin/ctb-service-run" "export CTB_INSTALL_ROOT=\"$TMP/install\""
+assert_contains "$TMP/user-bin/ctb-service-run" "export CTB_BIN_DIR=\"$TMP/user-bin\""
+assert_contains "$TMP/user-bin/ctb-service-run" "export CTB_STATE_DIR=\"$TMP/state\""
 if [ "$(uname -s)" = Darwin ]; then
   TOKEN_MODE=$(stat -f '%Lp' "$TMP/config/bot-token")
 else

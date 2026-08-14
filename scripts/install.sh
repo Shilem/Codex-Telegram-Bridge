@@ -86,6 +86,12 @@ cat > "$BIN_DIR/ctb-service-run" <<EOF
 set -euo pipefail
 umask 077
 export CTB_CONFIG_FILE="$CONFIG_FILE"
+export CTB_CONFIG_DIR="$CONFIG_DIR"
+export CTB_STATE_DIR="$STATE_DIR"
+export CTB_INSTALL_ROOT="$INSTALL_ROOT"
+export CTB_BIN_DIR="$BIN_DIR"
+export CTB_NODE_BIN="$NODE_BIN"
+export CTB_CODEX_BIN="$CODEX_BIN"
 export PATH="$(dirname "$NODE_BIN"):$(dirname "$CODEX_BIN"):/usr/bin:/bin:/usr/sbin:/sbin"
 exec "$NODE_BIN" "$INSTALL_ROOT/current/dist/service.js"
 EOF

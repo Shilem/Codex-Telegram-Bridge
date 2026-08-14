@@ -5,7 +5,10 @@ param(
   [Parameter(Mandatory=$true)][string]$Archive,
   [Parameter(Mandatory=$true)][string]$PublicKey,
   [string]$InstallRoot = "$env:LOCALAPPDATA\CodexTelegramBridge\app",
+  [string]$ConfigDir = "$env:APPDATA\CodexTelegramBridge",
+  [string]$StateDir = "$env:LOCALAPPDATA\CodexTelegramBridge",
   [string]$NodePath = "node.exe",
+  [string]$CodexPath = "codex.exe",
   [switch]$SkipService
 )
 $ErrorActionPreference = "Stop"
@@ -38,7 +41,7 @@ try {
   tar.exe -xzf $archiveFile -C $package
   $packageJson=Get-ChildItem -Recurse -Filter package.json $package | Select-Object -First 1
   if (-not $packageJson) { throw "release 包缺少 package.json" }
-  & (Join-Path $PSScriptRoot "install.ps1") -PackageDir $packageJson.DirectoryName -InstallRoot $InstallRoot -NodePath $NodePath -Version $m.version -SkipService
+  & (Join-Path $PSScriptRoot "install.ps1") -PackageDir $packageJson.DirectoryName -InstallRoot $InstallRoot -ConfigDir $ConfigDir -StateDir $StateDir -NodePath $NodePath -CodexPath $CodexPath -Version $m.version -SkipService
   if (-not $SkipService) {
     & schtasks.exe /End /TN CodexTelegramBridge 2>$null
     & schtasks.exe /Run /TN CodexTelegramBridge | Out-Null

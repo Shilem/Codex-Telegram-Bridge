@@ -19,6 +19,12 @@ try {
   if ($config.allowDangerFullAccess -ne $false) { throw "危险权限默认值错误" }
   if ($config.updatePublicKeyFile -ne "update-public-key.pem") { throw "更新公钥配置错误" }
   if (-not (Test-Path (Join-Path $tmp "config\update-public-key.pem"))) { throw "安装器未复制更新公钥" }
+  $runner=Get-Content -Raw (Join-Path $tmp "app\run-service.ps1")
+  if ($runner -notmatch 'CTB_NODE_BIN') { throw "服务启动器缺少 Node 更新环境" }
+  if ($runner -notmatch 'CTB_CODEX_BIN') { throw "服务启动器缺少 Codex 更新环境" }
+  if ($runner -notmatch 'CTB_INSTALL_ROOT') { throw "服务启动器缺少安装根目录环境" }
+  if ($runner -notmatch 'CTB_STATE_DIR') { throw "服务启动器缺少状态目录环境" }
+  if ((Get-Content -Raw (Join-Path $root "scripts\update.ps1")) -notmatch 'CodexPath') { throw "Windows 更新器未传递 Codex 路径" }
   if (-not ((Get-Content -Raw (Join-Path $root "deploy\windows-task.xml.template")) -match '<RunLevel>LeastPrivilege</RunLevel>')) { throw "任务计划未使用最低权限" }
   Write-Host "windows distribution tests passed"
 } finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }

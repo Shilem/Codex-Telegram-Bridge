@@ -4,6 +4,13 @@
 
 ## 1.0 架构修复
 
+### Telegram 签名更新确认后没有终态反馈
+
+- 根因一：更新 callback 只等待 `systemd-run` 等平台服务管理器成功创建独立任务，随后把原消息改成“正在安装”；真正的下载、验签、安装、重启、健康检查和回滚都在独立任务中执行。Bridge 没有持久化该任务标识，也没有在新进程启动后查询更新结果并回写原 Telegram 消息；创建子进程时还使用 `stdio: "ignore"`，因此安装成功、失败或回滚都不会产生 Telegram 终态反馈。
+- 根因二：Linux 主服务由安装器使用绝对路径运行 Node.js 24，但 `systemd-run --user` 创建的瞬态更新单元没有显式传入 `CTB_NODE_BIN`。更新脚本退回 `command -v node`，在 VPS 上解析到系统 Node.js v22.22.1，于安装前置检查立即失败；日志为“需要 Node.js 24 LTS，当前为 v22.22.1”。
+- 修复：更新确认时先以 0600 原子写入包含 action ID、目标版本、原 chat/message 和白名单安装环境的动作文件；Linux、macOS 和 Windows 的独立任务只使用当前 `process.execPath` 启动随版本发布的 Node worker，不再让服务管理器解析默认 `node`。worker 以安装器验证过的 Node、Codex、配置、状态、安装根目录和命令目录执行脚本，并原子记录成功、失败或已回滚终态。旧进程会监控未重启失败，新进程启动时恢复未通知动作；优先更新原 Telegram 消息，原消息不可编辑时另发终态，送达后删除动作文件。
+- 验证：单元测试覆盖 Linux `systemd-run` 使用 Node 24 worker、白名单环境与动作上下文，worker 成功和回滚结果，重启后编辑原消息及编辑失败后的新消息；Unix 发布测试断言服务启动器固定传入安装环境并完成签名 1.0→1.1 更新与回滚；Windows 发布夹具断言启动器和更新脚本传递 Node、Codex、配置、状态及安装路径。`npm run check`、Unix 发布测试、Shell 语法和 `git diff --check` 通过；真实 VPS 下一版本更新、真实回滚通知及 Windows 动态任务仍是发布验收项。
+
 ### Enterprise 的 Monthly 额度未显示
 
 - 根因：`/quota` 只读取 `account/rateLimits/read` 并渲染 `primary/secondary` 时间窗口，没有先通过 `account/read` 判断账户类型，也忽略了企业主额度桶里的 `individualLimit`。Business/Enterprise 登录因此只能看到“工作区点数可用”，看不到月度剩余比例、已用点数和重置时间。

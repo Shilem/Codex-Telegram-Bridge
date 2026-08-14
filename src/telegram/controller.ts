@@ -16,6 +16,7 @@ import type {
 } from "../security/index.js";
 import { shortProjectId } from "../security/projects.js";
 import type { BridgeDatabase, TaskLedger } from "../storage/index.js";
+import type { TerminalUpdateAction, UpdateAction } from "../update/action-store.js";
 import { cleanupDatabase } from "../runtime/maintenance.js";
 import { RuntimeSettings } from "../runtime/settings.js";
 import type { TelegramApi } from "./api.js";
@@ -34,7 +35,10 @@ export interface QuotaProvider {
 
 export interface UpdateProvider {
   check(): Promise<{ version: string }>;
-  install(expectedVersion: string): Promise<void>;
+  install(expectedVersion: string, target: { chatId: number; messageId: number }): Promise<UpdateAction>;
+  pendingActions(): Promise<UpdateAction[]>;
+  waitForTerminal(actionId: string): Promise<TerminalUpdateAction>;
+  markNotified(actionId: string): Promise<void>;
 }
 
 export interface ModelProvider {
@@ -49,6 +53,7 @@ export interface ModelProvider {
 export class TelegramController {
   readonly #settings: RuntimeSettings;
   readonly #attachmentWindows = new Map<number, number[]>();
+  readonly #updateMonitors = new Set<string>();
 
   public constructor(
     private readonly api: TelegramApi,
@@ -109,6 +114,12 @@ export class TelegramController {
       }
       throw error;
     }
+  }
+
+  public async resumePendingUpdateNotifications(): Promise<void> {
+    if (!this.updates) return;
+    const actions = await this.updates.pendingActions();
+    await Promise.all(actions.map((action) => this.#monitorUpdate(action.actionId)));
   }
 
   async #handleMessage(updateId: number, message: TelegramMessage): Promise<string> {
@@ -624,14 +635,47 @@ export class TelegramController {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (!consumed.requestId.startsWith("update:")) throw new BridgeError("更新按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
       const version = consumed.requestId.slice("update:".length);
-      await this.updates.install(version);
-      await this.api.answerCallback(callback.id, `正在安装 ${version}`, true);
-      await this.api.editMessage(message.chat.id, message.message_id, `<b>更新已确认</b>\n正在安装：<code>${escapeHtml(version)}</code>`, { inline_keyboard: [] });
+      const updateAction = await this.updates.install(version, {
+        chatId: message.chat.id,
+        messageId: message.message_id,
+      });
+      try {
+        await this.api.answerCallback(callback.id, `正在安装 ${version}`, true);
+        await this.api.editMessage(message.chat.id, message.message_id, `<b>更新已确认</b>\n正在安装：<code>${escapeHtml(version)}</code>`, { inline_keyboard: [] });
+      } finally {
+        void this.#monitorUpdate(updateAction.actionId);
+      }
     } else {
       await this.api.answerCallback(callback.id, "操作已取消");
     }
     this.tasks.recordNonTaskUpdate(updateId, "committed", `callback_${action}`);
     return `callback_${action}`;
+  }
+
+  async #monitorUpdate(actionId: string): Promise<void> {
+    if (!this.updates || this.#updateMonitors.has(actionId)) return;
+    this.#updateMonitors.add(actionId);
+    try {
+      const action = await this.updates.waitForTerminal(actionId);
+      const elapsedSeconds = Math.max(0, Math.round((action.updatedAt - action.createdAt) / 1000));
+      const text = action.status === "succeeded"
+        ? `<b>更新成功</b>\n版本：<code>${escapeHtml(action.currentVersion)}</code> → <code>${escapeHtml(action.expectedVersion)}</code>\n健康检查：通过\n耗时：${elapsedSeconds} 秒`
+        : action.status === "rolled_back"
+          ? `<b>更新失败，已自动回滚</b>\n目标版本：<code>${escapeHtml(action.expectedVersion)}</code>\n当前版本：<code>${escapeHtml(action.currentVersion)}</code>\n原因：${escapeHtml(action.result.reason)}\n下一步：运行 <code>/health</code> 后重试。`
+          : `<b>更新失败</b>\n目标版本：<code>${escapeHtml(action.expectedVersion)}</code>\n原因：${escapeHtml(action.result.reason)}\n影响：更新未确认完成，请以 <code>/health</code> 和主机版本为准。\n下一步：检查服务日志后重试。`;
+      try {
+        await this.api.editMessage(action.chatId, action.messageId, text, { inline_keyboard: [] });
+      } catch (error) {
+        this.logger.warn({ actionId, error: errorMessage(error) }, "更新原 Telegram 消息失败，改为发送终态消息");
+        await this.api.sendMessage(action.chatId, text);
+      }
+      await this.updates.markNotified(actionId);
+      this.logger.info({ actionId, version: action.expectedVersion, status: action.status, elapsedSeconds }, "Telegram 更新终态已送达");
+    } catch (error) {
+      this.logger.error({ actionId, error: errorMessage(error) }, "监控独立更新任务失败，保留动作等待下次启动恢复");
+    } finally {
+      this.#updateMonitors.delete(actionId);
+    }
   }
 
   #activeProjectId(): string {
