@@ -12,6 +12,8 @@ export const TASK_STATES = [
 
 export type TaskState = (typeof TASK_STATES)[number];
 
+export type CollaborationMode = "default" | "plan";
+
 export const TELEGRAM_UPDATE_STATES = [
   "received",
   "submitted",
@@ -38,6 +40,7 @@ export interface TaskRecord {
   readonly threadId: string | null;
   readonly turnId: string | null;
   readonly state: TaskState;
+  readonly collaborationMode: CollaborationMode;
   readonly body: string | null;
   readonly error: string | null;
   readonly createdAt: number;

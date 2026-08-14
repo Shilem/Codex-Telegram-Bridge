@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { BridgeDatabase } from "./database.js";
-import type { TaskRecord, TaskState } from "./types.js";
+import type { CollaborationMode, TaskRecord, TaskState } from "./types.js";
 
 const transitions: Readonly<Record<TaskState, ReadonlySet<TaskState>>> = {
   received: new Set(["queued", "failed", "cancelled"]),
@@ -23,6 +23,7 @@ interface TaskRow {
   thread_id: string | null;
   turn_id: string | null;
   state: TaskState;
+  collaboration_mode: CollaborationMode;
   body: string | null;
   error: string | null;
   created_at: number;
@@ -34,6 +35,7 @@ export interface TelegramTaskInput {
   readonly messageId: number;
   readonly projectId: string;
   readonly body: string;
+  readonly collaborationMode?: CollaborationMode;
   readonly taskId?: string;
 }
 
@@ -65,10 +67,10 @@ export class TaskLedger {
         .run(input.updateId, now, now);
       this.database.connection
         .prepare(
-          `INSERT INTO tasks(id, source_update_id, source_message_id, project_id, state, body, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'received', ?, ?, ?)`,
+          `INSERT INTO tasks(id, source_update_id, source_message_id, project_id, state, collaboration_mode, body, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'received', ?, ?, ?, ?)`,
         )
-        .run(taskId, input.updateId, input.messageId, input.projectId, input.body, now, now);
+        .run(taskId, input.updateId, input.messageId, input.projectId, input.collaborationMode ?? "default", input.body, now, now);
       this.transitionInTransaction(taskId, "queued", null, now);
       this.database.connection
         .prepare("UPDATE telegram_updates SET task_id = ?, status = 'committed', updated_at = ? WHERE update_id = ?")
@@ -189,6 +191,7 @@ function mapTask(row: TaskRow): TaskRecord {
     threadId: row.thread_id,
     turnId: row.turn_id,
     state: row.state,
+    collaborationMode: row.collaboration_mode,
     body: row.body,
     error: row.error,
     createdAt: row.created_at,

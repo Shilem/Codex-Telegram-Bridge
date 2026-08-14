@@ -38,6 +38,7 @@ function mapTask(task: StorageTaskRecord): TaskRecord {
     threadId: task.threadId,
     turnId: task.turnId,
     status: task.state,
+    collaborationMode: task.collaborationMode,
     prompt: task.body,
     error: task.error,
     createdAt: task.createdAt,
@@ -130,5 +131,11 @@ export class RuntimeStoreAdapter implements RuntimeStore, SchedulableTaskStore {
       this.#ownerId = owner?.id ?? null;
     }
     return this.#ownerId !== null && this.leases.isActive(projectId, this.#ownerId);
+  }
+
+  public disarmPlanMode(projectId: string): void {
+    this.database.connection
+      .prepare("DELETE FROM runtime_settings WHERE key = ?")
+      .run(`plan_mode:${projectId}`);
   }
 }

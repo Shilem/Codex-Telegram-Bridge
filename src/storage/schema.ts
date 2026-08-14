@@ -187,4 +187,10 @@ export const migrations: readonly Migration[] = [
     name: "project_service_tier",
     sql: "ALTER TABLE projects ADD COLUMN service_tier TEXT;",
   },
+  {
+    version: 6,
+    name: "task_collaboration_mode",
+    sql: `ALTER TABLE tasks ADD COLUMN collaboration_mode TEXT NOT NULL DEFAULT 'default'
+      CHECK (collaboration_mode IN ('default', 'plan'));`,
+  },
 ];

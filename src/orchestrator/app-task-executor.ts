@@ -5,6 +5,8 @@ import { isPublicAppServerNotification } from "../app-server/notification-policy
 import type {
   CommandApprovalDecision,
   CommandApprovalRequest,
+  CollaborationMode,
+  CollaborationModeListResponse,
   ConfigReadResponse,
   FileChangeApprovalRequest,
   RequestUserInputParams,
@@ -25,6 +27,7 @@ export interface RuntimeStore {
   appendTaskEvent(taskId: string, sequence: number, eventType: string, payload: unknown): void;
   transitionTask(taskId: string, status: TaskStatus): void;
   dangerLeaseActive(projectId: string): boolean;
+  disarmPlanMode(projectId: string): void;
 }
 
 export type ApprovalChoice = "accept" | "accept_for_session" | "decline" | "cancel";
@@ -55,6 +58,7 @@ export interface InteractiveGateway {
   plan(task: TaskRecord, summary: string): Promise<void>;
   tool(task: TaskRecord, activity: ToolActivity): Promise<void>;
   final(task: TaskRecord, text: string): Promise<void>;
+  planReady(task: TaskRecord, text: string, context: { threadId: string; turnId: string; itemId: string }): Promise<void>;
   failure(task: TaskRecord, text: string): Promise<void>;
   artifact(task: TaskRecord, filePath: string, projectRoot: string): Promise<void>;
   requestApproval(task: TaskRecord, card: ApprovalCard): Promise<ApprovalChoice>;
@@ -69,7 +73,11 @@ interface ActiveTurn {
   turnId: string;
   sequence: number;
   agentMessages: Map<string, { phase: string | null; text: string }>;
+  planDrafts: Map<string, string>;
   latestAgentMessageId: string | null;
+  latestPlanItemId: string | null;
+  finalPlanText: string;
+  finalPlanItemId: string | null;
   finalText: string;
   resolve: () => void;
   reject: (error: Error) => void;
@@ -83,6 +91,21 @@ function objectValue(value: unknown): Record<string, unknown> | null {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function renderPlanUpdate(params: Record<string, unknown>): string {
+  const explanation = stringValue(params.explanation);
+  const steps = Array.isArray(params.plan)
+    ? params.plan.flatMap((candidate) => {
+        const step = objectValue(candidate);
+        const text = stringValue(step?.step);
+        const status = stringValue(step?.status);
+        if (!text) return [];
+        const marker = status === "completed" ? "✓" : status === "inProgress" ? "→" : "○";
+        return [`${marker} ${text}`];
+      })
+    : [];
+  return [explanation, ...steps].filter((value): value is string => Boolean(value)).join("\n") || "计划已更新";
 }
 
 function sandboxFor(profile: PermissionProfile): "read-only" | "workspace-write" | "danger-full-access" {
@@ -112,6 +135,7 @@ export class AppServerTaskExecutor implements TaskExecutor {
   readonly #unsubscribeFatal: () => void;
   readonly #unsubscribeRequests: Array<() => void>;
   #notificationQueue: Promise<void> = Promise.resolve();
+  #collaborationModes: Promise<CollaborationModeListResponse> | null = null;
   #current: ActiveTurn | null = null;
 
   public constructor(
@@ -195,6 +219,11 @@ export class AppServerTaskExecutor implements TaskExecutor {
             ephemeral: false,
           });
       const threadId = threadResponse.thread.id;
+      const collaborationMode = await this.#resolveCollaborationMode(
+        task.collaborationMode,
+        threadResponse.model || effectiveModel,
+        effectiveEffort,
+      );
       this.logger.info({
         taskId: task.id,
         projectId: project.id,
@@ -204,10 +233,11 @@ export class AppServerTaskExecutor implements TaskExecutor {
         reasoningEffortSource: project.defaultEffort ? "project" : "local",
         serviceTier: threadResponse.serviceTier ?? effectiveServiceTier,
         serviceTierSource: project.serviceTier ? "project" : "local",
+        collaborationMode: collaborationMode.mode,
       }, "Codex 任务运行配置已解析");
       this.gateway.progress(
         task,
-        `运行配置：${threadResponse.model || effectiveModel || "未设置"} · ${effectiveEffort ?? "模型默认"} · ${threadResponse.serviceTier ?? effectiveServiceTier}`,
+        `运行配置：${threadResponse.model || effectiveModel || "未设置"} · ${effectiveEffort ?? "模型默认"} · ${threadResponse.serviceTier ?? effectiveServiceTier} · ${collaborationMode.mode === "plan" ? "Plan" : "Default"}`,
       );
       if (!existingThreadId) this.store.saveThread(project.id, threadId, profile);
       const input: UserInput[] = [{ type: "text", text: task.prompt, text_elements: [] }];
@@ -220,6 +250,7 @@ export class AppServerTaskExecutor implements TaskExecutor {
         serviceTier: project.serviceTier,
         effort: project.defaultEffort,
         summary: "concise",
+        collaborationMode,
       });
       const turnId = turnResponse.turn.id;
       this.store.bindTask(task.id, threadId, turnId);
@@ -231,7 +262,11 @@ export class AppServerTaskExecutor implements TaskExecutor {
           turnId,
           sequence: 0,
           agentMessages: new Map(),
+          planDrafts: new Map(),
           latestAgentMessageId: null,
+          latestPlanItemId: null,
+          finalPlanText: "",
+          finalPlanItemId: null,
           finalText: "",
           resolve,
           reject,
@@ -258,6 +293,27 @@ export class AppServerTaskExecutor implements TaskExecutor {
     await this.appServer.interruptTurn({ threadId: active.threadId, turnId: active.turnId });
   }
 
+  async #resolveCollaborationMode(
+    mode: TaskRecord["collaborationMode"],
+    effectiveModel: string | null,
+    effectiveEffort: string | null,
+  ): Promise<CollaborationMode> {
+    this.#collaborationModes ??= this.appServer.request<CollaborationModeListResponse>("collaborationMode/list", {});
+    const response = await this.#collaborationModes;
+    const preset = response.data.find((candidate) => candidate.mode === mode);
+    if (!preset) throw new BridgeError(`Codex App Server 不支持 ${mode} 协作模式`, "COLLABORATION_MODE_UNAVAILABLE");
+    const model = preset.model ?? effectiveModel;
+    if (!model) throw new BridgeError("Codex 协作模式缺少可用模型", "COLLABORATION_MODE_MODEL_MISSING");
+    return {
+      mode,
+      settings: {
+        model,
+        reasoning_effort: preset.reasoning_effort ?? effectiveEffort,
+        developer_instructions: null,
+      },
+    };
+  }
+
   async #handleNotification(notification: ServerNotification): Promise<void> {
     if (!isPublicAppServerNotification(notification)) return;
     const params = objectValue(notification.params);
@@ -265,9 +321,12 @@ export class AppServerTaskExecutor implements TaskExecutor {
     const threadId = stringValue(params.threadId);
     const turn = objectValue(params.turn);
     const turnId = stringValue(params.turnId) ?? stringValue(turn?.id);
-    if (!threadId || !turnId) return;
-    const active = this.#activeTurns.get(`${threadId}:${turnId}`);
+    if (!turnId) return;
+    const active = threadId
+      ? this.#activeTurns.get(`${threadId}:${turnId}`)
+      : [...this.#activeTurns.values()].find((candidate) => candidate.turnId === turnId);
     if (!active) {
+      if (!threadId) return;
       const key = `${threadId}:${turnId}`;
       const buffered = this.#earlyNotifications.get(key) ?? [];
       if (buffered.length < 100) buffered.push(notification);
@@ -302,9 +361,21 @@ export class AppServerTaskExecutor implements TaskExecutor {
         this.gateway.progress(active.task, message.text);
         break;
       }
+      case "item/plan/delta": {
+        const delta = stringValue(params.delta);
+        if (!delta) break;
+        const itemId = stringValue(params.itemId) ?? active.latestPlanItemId;
+        if (!itemId) {
+          this.logger.warn({ taskId: active.task.id, threadId, turnId }, "Plan 增量缺少 itemId，等待权威完成事件");
+          break;
+        }
+        const text = (active.planDrafts.get(itemId) ?? "") + delta;
+        active.planDrafts.set(itemId, text);
+        await this.gateway.plan(active.task, text);
+        break;
+      }
       case "turn/plan/updated": {
-        const explanation = stringValue(params.explanation) ?? "计划已更新";
-        await this.gateway.plan(active.task, explanation);
+        await this.gateway.plan(active.task, renderPlanUpdate(params));
         break;
       }
       case "item/started":
@@ -333,11 +404,27 @@ export class AppServerTaskExecutor implements TaskExecutor {
             if (active.latestAgentMessageId === itemId) active.latestAgentMessageId = null;
           }
         }
+        if (itemType === "plan") {
+          const itemId = item ? stringValue(item.id) : null;
+          const authoritativeText = item ? stringValue(item.text) : null;
+          if (!itemId) {
+            this.logger.warn({ taskId: active.task.id, threadId, turnId }, "Plan 生命周期事件缺少 itemId");
+          } else if (notification.method === "item/started") {
+            active.planDrafts.set(itemId, authoritativeText ?? "");
+            active.latestPlanItemId = itemId;
+          } else {
+            const text = authoritativeText ?? active.planDrafts.get(itemId) ?? "";
+            active.planDrafts.set(itemId, text);
+            active.finalPlanItemId = itemId;
+            active.finalPlanText = text;
+            if (active.latestPlanItemId === itemId) active.latestPlanItemId = null;
+          }
+        }
         if (itemType === "imageGeneration") {
           const savedPath = item ? stringValue(item.savedPath) : null;
           if (savedPath) await this.gateway.artifact(active.task, savedPath, active.project.rootPath);
         }
-        if (itemType && itemType !== "agentMessage" && itemType !== "reasoning") {
+        if (itemType && itemType !== "agentMessage" && itemType !== "reasoning" && itemType !== "plan") {
           const itemId = item ? stringValue(item.id) : null;
           if (itemId) {
             await this.gateway.tool(active.task, {
@@ -354,9 +441,23 @@ export class AppServerTaskExecutor implements TaskExecutor {
         const status = stringValue(completedTurn?.status);
         if (status === "completed") {
           try {
-            await this.gateway.final(active.task, active.finalText || "任务已完成，但没有可公开的文本结果。");
-          } finally {
+            if (active.task.collaborationMode === "plan") {
+              if (!active.finalPlanText || !active.finalPlanItemId) {
+                this.#failActive(active, new BridgeError("Plan 模式已结束，但 Codex 未返回权威 plan item", "PLAN_ITEM_MISSING"));
+                break;
+              }
+              await this.gateway.planReady(active.task, active.finalPlanText, {
+                threadId: active.threadId,
+                turnId,
+                itemId: active.finalPlanItemId,
+              });
+              this.store.disarmPlanMode(active.task.projectId);
+            } else {
+              await this.gateway.final(active.task, active.finalText || "任务已完成，但没有可公开的文本结果。");
+            }
             this.#finishActive(active);
+          } catch (error) {
+            this.#failActive(active, error instanceof Error ? error : new Error(String(error)));
           }
         } else {
           const turnError = objectValue(completedTurn?.error);

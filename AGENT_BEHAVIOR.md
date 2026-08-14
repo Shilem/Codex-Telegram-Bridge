@@ -6,6 +6,7 @@
 - 不吞掉 Telegram、App Server、SQLite、安装或更新错误。关键路径记录 `updateId/taskId/threadId/turnId/requestId`、耗时和脱敏结果，用户错误必须说明原因、影响和下一步。
 - 绝不记录 Bot Token、任务正文、命令全文、diff、附件内容或用户/聊天原始 ID；审计使用加盐指纹和脱敏元数据。
 - 所有 Telegram update、任务创建和任务状态迁移必须保持事务语义；崩溃后的运行中任务标记为 `unknown`，不得自动重放。
+- Plan 模式必须使用 App Server `collaborationMode/list` 返回的官方预设；以 `item/completed` 的 `plan` item 作为权威计划。计划操作按钮必须一次性、互斥并绑定生成计划的 Codex thread；“执行计划”固定切回 Default 模式并恢复该 thread。
 - 普通消息、附件和 callback 统一要求 private chat、已配对 owner user ID、已配对 private chat ID；所有 callback 必须使用一次性、限时且绑定上下文的签名 nonce。
 - 默认权限是 `workspace-write + on-request`。完全访问必须由主机显式启用、Telegram 二次确认并限制当前项目十五分钟；到期不接受新危险任务。
 - 项目路径和回传文件必须以 realpath 验证在预注册根目录或专用产物目录内；拒绝符号链接逃逸。

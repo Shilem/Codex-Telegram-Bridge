@@ -8,6 +8,7 @@ export const CODEX_COMMANDS: readonly TelegramBotCommand[] = [
   { command: "sessions", description: "Codex｜查看当前项目的会话" },
   { command: "tasks", description: "Codex｜查看最近任务及状态" },
   { command: "quota", description: "Codex｜查看剩余额度与重置时间" },
+  { command: "plan", description: "Codex｜让后续任务先生成执行计划" },
   { command: "cancel", description: "Codex｜取消当前或指定任务" },
   { command: "stop", description: "Codex｜立即停止当前任务" },
   { command: "model", description: "Codex｜查看或设置模型" },

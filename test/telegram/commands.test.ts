@@ -12,9 +12,9 @@ describe("Telegram 命令菜单", () => {
     expect(CODEX_COMMANDS.every(({ description }) => description.startsWith("Codex｜"))).toBe(true);
     expect(BRIDGE_COMMANDS.every(({ description }) => description.startsWith("Bridge｜"))).toBe(true);
     expect(new Set(TELEGRAM_COMMANDS.map(({ command }) => command)).size).toBe(TELEGRAM_COMMANDS.length);
-    expect(TELEGRAM_COMMANDS).toHaveLength(17);
+    expect(TELEGRAM_COMMANDS).toHaveLength(18);
     expect(TELEGRAM_COMMANDS.map(({ command }) => command)).toEqual([
-      "new", "sessions", "tasks", "quota", "cancel", "stop", "model", "effort", "fast", "permissions",
+      "new", "sessions", "tasks", "quota", "plan", "cancel", "stop", "model", "effort", "fast", "permissions",
       "help", "project", "status", "ping", "health", "cleanup", "update",
     ]);
   });

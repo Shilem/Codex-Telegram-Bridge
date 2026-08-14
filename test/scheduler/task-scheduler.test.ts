@@ -6,7 +6,7 @@ import type { SchedulableTaskStore, TaskExecutor } from "../../src/scheduler/tas
 import { TaskScheduler } from "../../src/scheduler/task-scheduler.js";
 
 function task(id: string, createdAt: number): TaskRecord {
-  return { id, telegramUpdateId: createdAt, sourceMessageId: createdAt, projectId: "p", threadId: null, turnId: null, status: "queued", prompt: id, error: null, createdAt, updatedAt: createdAt };
+  return { id, telegramUpdateId: createdAt, sourceMessageId: createdAt, projectId: "p", threadId: null, turnId: null, status: "queued", collaborationMode: "default", prompt: id, error: null, createdAt, updatedAt: createdAt };
 }
 
 class MemoryStore implements SchedulableTaskStore {

@@ -37,7 +37,7 @@ describe("BridgeDatabase", () => {
     expect(db.connection.pragma("journal_mode", { simple: true })).toBe("memory");
     expect(db.connection.pragma("foreign_keys", { simple: true })).toBe(1);
     expect(db.connection.pragma("synchronous", { simple: true })).toBe(2);
-    expect(db.connection.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 5 });
+    expect(db.connection.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 6 });
     expect(
       (db.connection.pragma("table_info(tasks)") as Array<{ name: string }>).some((column) => column.name === "turn_id"),
     ).toBe(true);
@@ -63,6 +63,7 @@ describe("BridgeDatabase", () => {
       { version: 3 },
       { version: 4 },
       { version: 5 },
+      { version: 6 },
     ]);
     expect(
       (upgraded.connection.pragma("table_info(tasks)") as Array<{ name: string }>).some(
@@ -107,8 +108,23 @@ describe("BridgeDatabase", () => {
     });
     expect(first.duplicate).toBe(false);
     expect(first.task.state).toBe("queued");
+    expect(first.task.collaborationMode).toBe("default");
     expect(duplicate).toEqual({ task: first.task, duplicate: true });
     expect(db.connection.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 1 });
+  });
+
+  it("persists the collaboration mode selected when the task enters the ledger", () => {
+    const db = database();
+    addProject(db);
+    const task = new TaskLedger(db).ingestTelegramTask({
+      updateId: 43,
+      messageId: 8,
+      projectId: "project-1",
+      body: "plan first",
+      collaborationMode: "plan",
+    }).task;
+
+    expect(task.collaborationMode).toBe("plan");
   });
 
   it("rolls the update back when task creation fails at the transaction boundary", () => {

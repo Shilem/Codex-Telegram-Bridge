@@ -160,6 +160,54 @@ describe("Telegram 交互式管理菜单", () => {
     expect(cancel).toHaveBeenCalledTimes(2);
     await command("/quota");
     expect(sent.at(-1)?.text).toContain("剩余 75%");
+
+    await command("/plan");
+    expect(new RuntimeSettings(database).get(`plan_mode:${first.id}`)).toBe("plan");
+    expect(sent.at(-1)?.text).toContain("Plan 模式已开启");
+    await command("先分析并生成计划");
+    expect(tasks.listTasks([], 1)[0]?.collaborationMode).toBe("plan");
+    await command("/plan off");
+    expect(new RuntimeSettings(database).get(`plan_mode:${first.id}`)).toBeNull();
+
+    database.connection.prepare("UPDATE projects SET permission_profile = ? WHERE id = ?")
+      .run("workspace-write + on-request", first.id);
+    const executeToken = approvals.create({
+      requestId: `plan:${first.id}`,
+      threadId: "codex-thread",
+      turnId: "plan-turn",
+      itemId: "plan-item",
+    }, Date.now() + 60_000);
+    await controller.handle({
+      update_id: updateId++,
+      callback_query: {
+        id: "cb-plan-execute",
+        from: { id: 10, is_bot: false, first_name: "Owner" },
+        message: { message_id: 99, date: Math.floor(Date.now() / 1000), chat: { id: 10, type: "private" }, text: "计划内容" },
+        data: `pm:${executeToken}:e`,
+      },
+    });
+    const executionTask = tasks.listTasks([], 1)[0];
+    expect(executionTask?.body).toBe("Implement the plan.");
+    expect(executionTask?.collaborationMode).toBe("default");
+    expect(edited.at(-1)?.text).toContain("计划执行已进入队列");
+
+    const skipToken = approvals.create({
+      requestId: `plan:${first.id}`,
+      threadId: "codex-thread",
+      turnId: "plan-turn-2",
+      itemId: "plan-item-2",
+    }, Date.now() + 60_000);
+    await controller.handle({
+      update_id: updateId++,
+      callback_query: {
+        id: "cb-plan-skip",
+        from: { id: 10, is_bot: false, first_name: "Owner" },
+        message: { message_id: 100, date: Math.floor(Date.now() / 1000), chat: { id: 10, type: "private" }, text: "计划正文" },
+        data: `pm:${skipToken}:s`,
+      },
+    });
+    expect(edited.at(-1)?.text).toContain("计划已跳过");
+    expect(edited.at(-1)?.markup).toEqual({ inline_keyboard: [] });
     expect(owner.id).toBe(1);
   });
 });

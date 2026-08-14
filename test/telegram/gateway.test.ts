@@ -133,4 +133,43 @@ describe("Telegram Gateway 消息生命周期", () => {
       { inline_keyboard: [] },
     );
   });
+
+  it("Plan 完成时展示权威计划并生成互斥的执行和跳过按钮", async () => {
+    const editMessage = vi.fn(() => Promise.resolve({ message_id: 7 }));
+    const create = vi.fn(() => "plan-token");
+    const gateway = new TelegramInteractiveGateway(
+      { editMessage } as unknown as TelegramApi,
+      10,
+      { create } as never,
+      {} as never,
+      1024,
+      { error: vi.fn(), warn: vi.fn() } as never,
+    );
+    const task = { id: "12345678-task", projectId: "project-1" } as TaskRecord;
+    gateway.attachProgress(task.id, 7);
+
+    await gateway.planReady(task, "第一步\n第二步", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "plan-1",
+    });
+
+    expect(create).toHaveBeenCalledWith({
+      requestId: "plan:project-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "plan-1",
+    }, expect.any(Number));
+    expect(editMessage).toHaveBeenLastCalledWith(
+      10,
+      7,
+      "<b>计划已生成</b>\n\n第一步\n第二步",
+      {
+        inline_keyboard: [[
+          { text: "执行计划", callback_data: "pm:plan-token:e" },
+          { text: "跳过", callback_data: "pm:plan-token:s" },
+        ]],
+      },
+    );
+  });
 });

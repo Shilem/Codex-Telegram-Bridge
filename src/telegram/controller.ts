@@ -177,6 +177,7 @@ export class TelegramController {
       messageId: message.message_id,
       projectId,
       body: promptParts.join("\n\n"),
+      collaborationMode: this.#settings.get(`plan_mode:${projectId}`) === "plan" ? "plan" : "default",
       taskId,
     });
     try {
@@ -221,6 +222,20 @@ export class TelegramController {
         const menu = this.#taskMenu();
         await this.api.sendMessage(message.chat.id, menu.text, menu.keyboard);
         return "task_menu";
+      }
+      case "plan": {
+        const projectId = this.#activeProjectId();
+        if (args[0] === "off" || args[0] === "cancel") {
+          this.database.connection.prepare("DELETE FROM runtime_settings WHERE key = ?").run(`plan_mode:${projectId}`);
+          await this.api.sendMessage(message.chat.id, "<b>Plan 模式已关闭</b>\n之后发送的普通任务将直接执行。已进入队列的 Plan 任务不受影响。");
+          return "plan_disabled";
+        }
+        this.#settings.set(`plan_mode:${projectId}`, "plan");
+        await this.api.sendMessage(
+          message.chat.id,
+          "<b>Plan 模式已开启</b>\n接下来发送的任务只会分析并生成计划，不会修改代码。计划生成后可点击“执行计划”或“跳过”。使用 <code>/plan off</code> 可提前关闭。",
+        );
+        return "plan_enabled";
       }
       case "cancel":
       case "stop": {
@@ -319,7 +334,8 @@ export class TelegramController {
         const project = this.projects.require(this.#activeProjectId());
         const local = await this.models.localState(project.normalizedRoot);
         const active = this.scheduler.currentTask;
-        await this.api.sendMessage(message.chat.id, `<b>服务状态</b>\n项目：${escapeHtml(project.name)}\n模型：${escapeHtml(project.defaultModel ?? local.model ?? "未设置")}\n推理强度：${escapeHtml(project.reasoningEffort ?? local.reasoningEffort ?? "模型默认")}\nFast：${escapeHtml(project.serviceTier ?? local.serviceTier ?? "default")}\n权限：${escapeHtml(project.permissionProfile)}\n运行任务：${active ? `<code>${active.id}</code>` : "无"}\n队列：${this.tasks.listQueued().length}`);
+        const planMode = this.#settings.get(`plan_mode:${project.id}`) === "plan" ? "Plan" : "Default";
+        await this.api.sendMessage(message.chat.id, `<b>服务状态</b>\n项目：${escapeHtml(project.name)}\n模式：${planMode}\n模型：${escapeHtml(project.defaultModel ?? local.model ?? "未设置")}\n推理强度：${escapeHtml(project.reasoningEffort ?? local.reasoningEffort ?? "模型默认")}\nFast：${escapeHtml(project.serviceTier ?? local.serviceTier ?? "default")}\n权限：${escapeHtml(project.permissionProfile)}\n运行任务：${active ? `<code>${active.id}</code>` : "无"}\n队列：${this.tasks.listQueued().length}`);
         return "status";
       }
       case "health":
@@ -378,6 +394,61 @@ export class TelegramController {
       await this.scheduler.cancel(consumed.requestId.slice("cancel:".length));
       await this.api.answerCallback(callback.id, "任务已取消");
       await this.api.editMessage(message.chat.id, message.message_id, "<b>任务已取消</b>", { inline_keyboard: [] });
+    } else if (action === "pm") {
+      const decisionCode = parts.at(-1);
+      const token = parts.slice(0, -1).join(":");
+      if (decisionCode !== "e" && decisionCode !== "s") throw new BridgeError("Plan 操作无效", "PLAN_ACTION_INVALID");
+      const result = this.database.connection.transaction(() => {
+        const consumed = this.approvals.consumeAction(token, decisionCode === "e" ? "accept" : "decline");
+        if (!consumed.requestId.startsWith("plan:")) throw new BridgeError("Plan 按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+        const projectId = consumed.requestId.slice("plan:".length);
+        const project = this.projects.require(projectId);
+        if (!project.enabled) throw new BridgeError("该项目已禁用", "PROJECT_DISABLED");
+        this.database.connection.prepare("DELETE FROM runtime_settings WHERE key = ?").run(`plan_mode:${projectId}`);
+        if (decisionCode === "s") return { taskId: null, projectId };
+        this.#resumeCodexThread(consumed.threadId, projectId);
+        const taskId = randomUUID();
+        this.tasks.ingestTelegramTask({
+          updateId,
+          messageId: message.message_id,
+          projectId,
+          body: "Implement the plan.",
+          collaborationMode: "default",
+          taskId,
+        });
+        return { taskId, projectId };
+      })();
+      if (result.taskId) {
+        try {
+          const cancelToken = this.approvals.create({
+            requestId: `cancel:${result.taskId}`,
+            threadId: result.taskId,
+            turnId: "task",
+            itemId: result.taskId,
+          }, Date.now() + 24 * 60 * 60_000);
+          await this.api.answerCallback(callback.id, "计划已进入执行队列");
+          await this.api.editMessage(
+            message.chat.id,
+            message.message_id,
+            `<b>计划执行已进入队列</b>\nID：<code>${result.taskId}</code>`,
+            { inline_keyboard: [[{ text: "取消", callback_data: `taskcancel:${cancelToken}` }]] },
+          );
+          this.gateway.attachProgress(result.taskId, message.message_id);
+        } finally {
+          this.scheduler.wake();
+        }
+      } else {
+        const retainedPlan = (message.text ?? "")
+          .replace(/^计划已生成(?:\s+\d+\/\d+)?\s*/u, "")
+          .trim();
+        await this.api.answerCallback(callback.id, "已跳过计划");
+        await this.api.editMessage(
+          message.chat.id,
+          message.message_id,
+          `<b>计划已跳过</b>\n\n${escapeHtml((retainedPlan || "计划内容已保留在 Codex 会话中。").slice(0, 3_800))}`,
+          { inline_keyboard: [] },
+        );
+      }
     } else if (action === "p") {
       const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
       if (!consumed.requestId.startsWith("project:")) throw new BridgeError("项目按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
@@ -616,6 +687,14 @@ export class TelegramController {
         .run(now, threadId, projectId).changes;
       if (changes !== 1) throw new BridgeError("恢复会话失败", "SESSION_RESUME_FAILED");
     })();
+  }
+
+  #resumeCodexThread(codexThreadId: string, projectId: string): void {
+    const row = this.database.connection
+      .prepare("SELECT id FROM threads WHERE codex_thread_id = ? AND project_id = ?")
+      .get(codexThreadId, projectId) as { id: string } | undefined;
+    if (!row) throw new BridgeError("计划所属 Codex 会话不存在", "PLAN_THREAD_NOT_FOUND");
+    this.#resumeThread(row.id, projectId);
   }
 
   #taskMenu(): { text: string; keyboard: InlineKeyboardMarkup } {

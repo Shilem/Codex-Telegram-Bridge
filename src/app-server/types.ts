@@ -40,6 +40,27 @@ export type ApprovalPolicy =
 
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
+export type CollaborationModeKind = "default" | "plan";
+
+export interface CollaborationMode {
+  mode: CollaborationModeKind;
+  settings: {
+    model: string;
+    reasoning_effort?: string | null;
+    developer_instructions?: string | null;
+  };
+}
+
+export interface CollaborationModeMask {
+  name: string;
+  mode: CollaborationModeKind | null;
+  model: string | null;
+  reasoning_effort: string | null;
+}
+
+export interface CollaborationModeListResponse {
+  data: CollaborationModeMask[];
+}
 
 export interface ThreadStartParams {
   model?: string | null;
@@ -102,6 +123,7 @@ export interface TurnStartParams {
   serviceTier?: string | null;
   effort?: string | null;
   summary?: ReasoningSummary | null;
+  collaborationMode?: CollaborationMode | null;
   outputSchema?: JsonValue | null;
 }
 

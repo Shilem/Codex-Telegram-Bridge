@@ -9,6 +9,7 @@ import type { ApprovalCard, ApprovalChoice, InteractiveGateway, ToolActivity } f
 import { type ApprovalBinding } from "../security/index.js";
 import type { ApprovalDecision , ApprovalManager} from "../security/index.js";
 import type { TelegramApi } from "./api.js";
+import type { InlineKeyboardMarkup } from "./types.js";
 import { escapeHtml, splitTelegramText } from "./format.js";
 import { TelegramProgressMessage } from "./progress.js";
 
@@ -67,8 +68,9 @@ export class TelegramInteractiveGateway extends EventEmitter implements Interact
     progress?.update(`<b>任务 ${escapeHtml(task.id.slice(0, 8))}</b>\n\n${escapeHtml(text.slice(0, 3900))}`);
   }
 
-  public async plan(task: TaskRecord, summary: string): Promise<void> {
-    await this.api.sendMessage(this.chatId, `<b>计划更新 · ${escapeHtml(task.id.slice(0, 8))}</b>\n${escapeHtml(summary)}`);
+  public plan(task: TaskRecord, summary: string): Promise<void> {
+    this.progress(task, `Plan 模式\n\n${summary}`);
+    return Promise.resolve();
   }
 
   public async tool(task: TaskRecord, activity: ToolActivity): Promise<void> {
@@ -104,11 +106,42 @@ export class TelegramInteractiveGateway extends EventEmitter implements Interact
     await this.#terminal(task, text, "最终结果", "任务已完成，但没有可公开的文本结果。");
   }
 
+  public async planReady(
+    task: TaskRecord,
+    text: string,
+    context: { threadId: string; turnId: string; itemId: string },
+  ): Promise<void> {
+    const token = this.approvalManager.create({
+      requestId: `plan:${task.projectId}`,
+      threadId: context.threadId,
+      turnId: context.turnId,
+      itemId: context.itemId,
+    }, Date.now() + 24 * 60 * 60_000);
+    await this.#terminal(
+      task,
+      text,
+      "计划已生成",
+      "Codex 已完成规划，但没有返回计划正文。",
+      {
+        inline_keyboard: [[
+          { text: "执行计划", callback_data: `pm:${token}:e` },
+          { text: "跳过", callback_data: `pm:${token}:s` },
+        ]],
+      },
+    );
+  }
+
   public async failure(task: TaskRecord, text: string): Promise<void> {
     await this.#terminal(task, text, "任务失败", "任务未完成，详情请检查本机服务日志。");
   }
 
-  async #terminal(task: TaskRecord, text: string, title: string, fallback: string): Promise<void> {
+  async #terminal(
+    task: TaskRecord,
+    text: string,
+    title: string,
+    fallback: string,
+    replyMarkup: InlineKeyboardMarkup = { inline_keyboard: [] },
+  ): Promise<void> {
     await this.#removeToolCard(task.id);
     const progress = this.#progress.get(task.id);
     this.#progress.delete(task.id);
@@ -116,15 +149,17 @@ export class TelegramInteractiveGateway extends EventEmitter implements Interact
     const firstChunk = chunks[0] ?? fallback;
     const renderChunk = (chunk: string, index: number): string =>
       `<b>${title}${chunks.length > 1 ? ` ${index + 1}/${chunks.length}` : ""}</b>\n\n${escapeHtml(chunk)}`;
+    const firstReplyMarkup = chunks.length === 1 ? replyMarkup : { inline_keyboard: [] };
     if (progress) {
-      await progress.finalize(renderChunk(firstChunk, 0));
+      await progress.finalize(renderChunk(firstChunk, 0), firstReplyMarkup);
     } else {
-      await this.api.sendMessage(this.chatId, renderChunk(firstChunk, 0));
+      await this.api.sendMessage(this.chatId, renderChunk(firstChunk, 0), firstReplyMarkup);
     }
     for (const [index, chunk] of chunks.slice(1).entries()) {
       await this.api.sendMessage(
         this.chatId,
         renderChunk(chunk, index + 1),
+        index === chunks.length - 2 ? replyMarkup : undefined,
       );
     }
   }

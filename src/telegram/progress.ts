@@ -1,5 +1,6 @@
 import type { TelegramApi } from "./api.js";
 import type { Logger } from "pino";
+import type { InlineKeyboardMarkup } from "./types.js";
 
 export class TelegramProgressMessage {
   #lastEditAt = 0;
@@ -30,13 +31,13 @@ export class TelegramProgressMessage {
     await this.#drainPromise;
   }
 
-  public async finalize(text: string): Promise<void> {
+  public async finalize(text: string, replyMarkup: InlineKeyboardMarkup = { inline_keyboard: [] }): Promise<void> {
     this.#terminal = true;
     this.#latestText = null;
     this.#coalescedUpdates = 0;
     this.#releaseWait?.();
     await this.#drainPromise;
-    await this.api.editMessage(this.chatId, this.messageId, text, { inline_keyboard: [] });
+    await this.api.editMessage(this.chatId, this.messageId, text, replyMarkup);
     this.#lastEditAt = Date.now();
   }
 

@@ -6,6 +6,8 @@
 
 禁止提交 Bot Token、Chat ID、生产配置、数据库、WAL、会话内容、日志、附件或状态目录。Telegram API、App Server、SQLite、服务管理和更新流程的改动必须包含结构化可验证日志和自动化测试。
 
+Plan 模式使用 App Server `collaborationMode/list` 的官方 Plan/Default 预设；`item/completed` 的 `plan` item 是权威结果。Telegram 的执行/跳过按钮必须是一次性互斥动作，执行时恢复生成计划的原 Codex thread 并明确切回 Default 模式。
+
 定位代码时优先使用仓库 `.codegraph/`：先执行 `codegraph explore` 或 `codegraph node`，代码变化后执行 `codegraph sync`。不要用静默兜底掩盖错误；定位根因并保留可观测性。大型重构先建分支；提交 Git 时使用中文日志，说明需求/问题与实现思路。
 
 最低验证：

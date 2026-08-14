@@ -12,6 +12,8 @@ export const TASK_STATUSES = [
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
+export type CollaborationMode = "default" | "plan";
+
 export const PERMISSION_PROFILES = [
   "read-only",
   "workspace-write + on-request",
@@ -39,6 +41,7 @@ export interface TaskRecord {
   threadId: string | null;
   turnId: string | null;
   status: TaskStatus;
+  collaborationMode: CollaborationMode;
   prompt: string | null;
   error: string | null;
   createdAt: number;
