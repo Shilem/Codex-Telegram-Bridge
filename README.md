@@ -1,21 +1,21 @@
 # Codex Telegram Bridge
 
-在 Telegram 私聊里使用你电脑上的 Codex。它适合只有一个使用者、希望从手机查看进度或处理审批，同时又不想开放公网端口的场景。
+在 Telegram 私聊里使用你电脑上的 Codex。适合一个人使用：出门时从手机发任务、看进度、处理审批，不需要给电脑开放公网端口。
 
-Bridge 会在本机启动 `codex app-server`，Telegram 只负责收发消息。项目目录必须先在电脑上登记，Bot 不能自行访问其他位置。
+Bridge 在本机启动 `codex app-server`，不读取终端画面，也不猜测 Codex 的会话文件。Telegram 只负责收发消息。默认权限只允许访问已经登记的项目；十五分钟完全访问是单独的高危选项，需要先在主机开启，再到 Telegram 确认。
 
 > Telegram Bot 私聊不是端到端加密渠道。不要发送密码、Token、私钥、生产数据或其他机密。
 
 ## 主要功能
 
-- 支持 macOS、Linux 和 Windows。
-- 可登记多个项目，并在 Telegram 中用按钮切换。
-- 支持任务队列、会话恢复、取消、安全重试和 Codex 审批。
-- 模型、思考深度和 Fast 模式优先跟随本机 Codex 设置。
-- 支持图片、普通文件和生成产物回传。
-- 默认限制在项目目录内工作；完全访问需要主机开关和 Telegram 二次确认。
-- 使用 SQLite 保存任务和 Telegram 去重状态。服务意外中断后，不会自动重复执行未确认的任务。
-- 更新包带有签名和 SHA-256 校验，更新失败会自动回滚。
+- 支持 macOS、Linux 和 Windows，可以登记多个项目并在 Telegram 中切换。
+- 普通消息直接执行；`/plan` 会先生成计划，再由你决定执行还是跳过。
+- 任务排队运行，过程更新会合并在同一张卡片；完成或失败后，原卡片会显示最终状态。支持取消、会话恢复、`unknown` 任务安全重试和 Codex 审批。
+- 模型、思考深度和 Fast 档位默认跟随本机 Codex，也可以按项目覆盖。
+- `/quota` 读取 Codex 返回的额度窗口和重置时间，不做本地估算。
+- 可以发送图片和普通文件，也能把 Codex 生成的文件传回 Telegram。
+- SQLite 记录任务和 Telegram 去重状态。服务中断后，结果不确定的任务不会自动重跑。
+- 更新包经过签名和 SHA-256 校验；新版本启动失败时自动回滚。
 
 一个 Bridge 实例同时只运行一个 Codex 任务，其他任务会排队。1.0 暂不支持群聊、多人协作、语音、视频理解和定时任务。
 
@@ -55,7 +55,6 @@ Node.js 必须是 24.x。Codex CLI 需要已经完成登录，并且支持 `app-
 ```bash
 git clone https://github.com/Shilem/Codex-Telegram-Bridge.git
 cd Codex-Telegram-Bridge
-git checkout v1.0.0
 ./scripts/install.sh
 ```
 
@@ -89,7 +88,6 @@ export PATH="$HOME/.local/bin:$PATH"
 ```powershell
 git clone https://github.com/Shilem/Codex-Telegram-Bridge.git
 Set-Location Codex-Telegram-Bridge
-git checkout v1.0.0
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
@@ -172,7 +170,9 @@ Bridge 会回复任务编号和队列状态，并在同一条进度消息中持�
 
 ### 项目
 
-在 Telegram 中发送 `/project`，点击按钮即可切换。项目的登记、禁用和删除只能在主机完成：
+在 Telegram 中发送 `/project`，可以切换项目，也可以把项目从列表中移除。这里的“移除”只会禁用登记记录，历史任务和源码都还在。
+
+登记项目和彻底删除登记记录要在主机完成：
 
 ```bash
 ctb project add <path> --name <name>
@@ -182,15 +182,27 @@ ctb project disable <id>
 ctb project remove <id>
 ```
 
-禁用后的项目不会出现在 Telegram 列表中。永久移除前必须先禁用；如果项目仍有任务或会话记录，只能保持禁用。移除登记记录不会删除项目目录里的文件。
+禁用后的项目不会出现在 Telegram 列表中。`ctb project remove` 只能删除没有任务或会话记录的禁用项目；它同样不会删除项目目录。
 
 ### 任务
 
 - 直接发送文字、图片或文件即可创建任务。
-- 发送 `/plan` 后，当前项目后续收到的任务会使用 Codex 官方 Plan 模式，直到成功生成一份权威计划。计划卡提供“执行计划”和“跳过”按钮；执行会在生成计划的同一 Codex 会话中切回 Default 模式继续，跳过则只保留计划。可用 `/plan off` 提前退出。
 - `/tasks` 显示最近的任务。进入详情后可以取消任务，或安全重试状态为 `unknown` 的任务。
 - 服务中断时，尚未确认结果的任务会变成 `unknown`，不会自动重复执行。
 - 已明确失败的任务不能直接重试。检查错误原因后，重新发送任务更安全。
+
+### 先生成计划
+
+发送 `/plan`，再发送任务。这个开关只影响当前项目，会一直保持到 Codex 成功返回计划。
+
+计划出来后，卡片底部有两个按钮：
+
+- “执行计划”会回到生成这份计划的 Codex 会话，切回 Default 模式继续执行。
+- “跳过”会保留计划，不创建执行任务。
+
+两个按钮共用一次性凭证，点过一个后另一个就失效。按钮二十四小时内有效。想提前退出可发送 `/plan off`；已经排队的 Plan 任务不会因此改变。
+
+Plan 依赖 Codex App Server 提供 Plan/Default 协作模式。若当前 Codex CLI 不支持，任务会明确报错，请先升级 Codex CLI。
 
 ### 会话
 
@@ -207,17 +219,21 @@ ctb project remove <id>
 
 项目没有单独设置时，Bridge 会优先读取当前工作区的本机 Codex 配置。切换模型后，项目级思考深度和 Fast 覆盖会被清除，避免保留不兼容的组合。
 
+`/quota` 直接读取 Codex 账户的额度信息，包括剩余比例、额度窗口和重置时间。上游没有返回的字段会显示“未提供”，Bridge 不会自行推算。
+
 ### 权限
 
 发送 `/permissions` 后用按钮选择：
 
 - `read-only`：只读检查和分析。
-- `workspace-write`：可修改当前项目；这是默认档位。
+- `workspace-write + on-request`：可修改当前项目，敏感操作会请求批准；这是默认档位。
 - `danger-full-access`：完全访问。
 
 完全访问默认关闭。确有需要时，先在主机配置中设置 `allowDangerFullAccess: true`，再从 Telegram 二次确认。授权只对当前项目生效十五分钟。
 
-审批只能通过对应卡片的一次性按钮完成。回复 `yes`、`1` 或“同意”不会批准操作。涉及秘密的问题也不会要求你在 Telegram 中输入答案。
+审批只能通过对应卡片的一次性按钮完成。回复 `yes`、`1` 或“同意”不会批准操作。涉及秘密的问题不会通过 Telegram 收集。
+
+停机期间积压超过十分钟的普通命令和任务会被拒绝，避免服务恢复后执行过时消息。`/start`、`/help` 和 `/ping` 不受这项限制。
 
 ### 附件和清理
 
@@ -251,8 +267,8 @@ Telegram 的 `/` 菜单分为两类。
 | 命令 | 用途 |
 | --- | --- |
 | `/help` | 查看帮助和安全边界 |
-| `/project` | 使用按钮切换项目 |
-| `/status` | 查看当前项目和任务状态 |
+| `/project` | 使用按钮切换项目或移出项目列表 |
+| `/status` | 查看项目、Plan/Default 模式和任务状态 |
 | `/ping` | 检查 Telegram 消息延迟 |
 | `/health` | 检查服务和本机依赖 |
 | `/cleanup` | 清理超过保留期的数据 |
@@ -315,7 +331,7 @@ schtasks.exe /Query /TN CodexTelegramBridge /V /FO LIST
 
 ## npm 包
 
-正式版本发布在 npm：
+正式版本发布在 npm，更新频率可能慢于仓库 `main`：
 
 ```bash
 npm install --global @shilem/codex-telegram-bridge
