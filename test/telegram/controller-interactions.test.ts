@@ -48,6 +48,7 @@ describe("Telegram 交互式管理菜单", () => {
       answerCallback: vi.fn(() => Promise.resolve(true)),
     } as unknown as TelegramApi;
     const approvals = new ApprovalManager(database, Buffer.alloc(32, 1));
+    const cancel = vi.fn(() => Promise.resolve());
     const controller = new TelegramController(
       api,
       database,
@@ -57,10 +58,11 @@ describe("Telegram 交互式管理菜单", () => {
       new PermissionLeaseManager(database),
       approvals,
       new AuditLog(database, Buffer.alloc(16, 2)),
-      { currentTask: null, cancel: vi.fn(), wake: vi.fn() } as never,
+      { currentTask: { id: "current-task" }, cancel, wake: vi.fn() } as never,
       { cleanup: vi.fn(() => Promise.resolve({ attachments: 0, artifacts: 0 })) } as never,
       { setChatId: vi.fn(), answerTextInput: vi.fn(() => false), attachProgress: vi.fn() } as never,
       { render: vi.fn(() => Promise.resolve("健康")) },
+      { render: vi.fn(() => Promise.resolve("<b>Codex 剩余额度</b>\n剩余 75%")) },
       {
         list: vi.fn(() => Promise.resolve([{ id: "gpt", model: "gpt-test", displayName: "GPT Test", description: "test", hidden: false, isDefault: true, defaultReasoningEffort: "medium", supportedReasoningEfforts: [{ reasoningEffort: "low", description: "低" }, { reasoningEffort: "medium", description: "中" }], serviceTiers: [{ id: "priority", name: "Fast", description: "1.5x speed" }], defaultServiceTier: "priority" }])),
         localState: vi.fn(() => Promise.resolve({ model: "gpt-test", reasoningEffort: "low", serviceTier: "default" })),
@@ -150,6 +152,14 @@ describe("Telegram 交互式管理菜单", () => {
     database.connection.prepare("UPDATE projects SET service_tier = ? WHERE id = ?").run("priority", first.id);
     await command("/new");
     expect(sent.at(-1)?.text).toContain("Fast：开启（<code>priority</code>）");
+
+    await command("/stop");
+    expect(cancel).toHaveBeenLastCalledWith("current-task");
+    expect(sent.at(-1)?.text).toContain("已取消");
+    await command("/cancel");
+    expect(cancel).toHaveBeenCalledTimes(2);
+    await command("/quota");
+    expect(sent.at(-1)?.text).toContain("剩余 75%");
     expect(owner.id).toBe(1);
   });
 });

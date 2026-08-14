@@ -36,6 +36,8 @@ interface RequestOptions {
 export class TelegramApi {
   readonly #apiBase: string;
   readonly #fileBase: string;
+  readonly #chatMutationQueues = new Map<number, Promise<void>>();
+  readonly #nextChatMutationAt = new Map<number, number>();
 
   public constructor(
     token: string,
@@ -63,8 +65,15 @@ export class TelegramApi {
         const elapsedMs = Math.round(performance.now() - startedAt);
         this.logger.debug({ method, elapsedMs, attempt, status: response.status }, "Telegram API 请求完成");
         if (response.status === 429 && envelope.parameters?.retry_after !== undefined) {
-          if (attempt === attempts) break;
           const retryAfterSeconds = envelope.parameters.retry_after;
+          this.logger.warn({ method, attempt, retryAfterSeconds }, "Telegram API 触发限流");
+          if (attempt === attempts) {
+            throw new BridgeError(
+              `Telegram ${method} 触发限流，${retryAfterSeconds} 秒后可重试`,
+              "TELEGRAM_RATE_LIMITED",
+              { status: response.status, errorCode: envelope.error_code, retryAfterSeconds },
+            );
+          }
           await new Promise((resolveDelay) => setTimeout(resolveDelay, retryAfterSeconds * 1000));
           continue;
         }
@@ -84,6 +93,28 @@ export class TelegramApi {
       }
     }
     throw new BridgeError(`Telegram ${method} 达到重试上限`, "TELEGRAM_RETRY_EXHAUSTED");
+  }
+
+  #mutateChat<T>(chatId: number, method: string, mutation: () => Promise<T>): Promise<T> {
+    const previous = this.#chatMutationQueues.get(chatId) ?? Promise.resolve();
+    const result = previous.then(async () => {
+      const waitMs = Math.max(0, (this.#nextChatMutationAt.get(chatId) ?? 0) - Date.now());
+      if (waitMs > 0) {
+        this.logger.debug({ method, waitMs }, "Telegram 同一聊天消息变更等待限速窗口");
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, waitMs));
+      }
+      try {
+        return await mutation();
+      } finally {
+        this.#nextChatMutationAt.set(chatId, Date.now() + 1_000);
+      }
+    });
+    const tail = result.then(() => undefined, () => undefined);
+    this.#chatMutationQueues.set(chatId, tail);
+    void tail.finally(() => {
+      if (this.#chatMutationQueues.get(chatId) === tail) this.#chatMutationQueues.delete(chatId);
+    });
+    return result;
   }
 
   public getUpdates(offset: number, timeoutSeconds: number, signal: AbortSignal): Promise<TelegramUpdate[]> {
@@ -113,14 +144,14 @@ export class TelegramApi {
     replyMarkup?: InlineKeyboardMarkup,
     replyToMessageId?: number,
   ): Promise<SentMessage> {
-    return this.#request<SentMessage>("sendMessage", {
+    return this.#mutateChat(chatId, "sendMessage", () => this.#request<SentMessage>("sendMessage", {
       chat_id: chatId,
       text,
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
       ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
       ...(replyToMessageId ? { reply_parameters: { message_id: replyToMessageId } } : {}),
-    });
+    }));
   }
 
   public editMessage(
@@ -129,21 +160,21 @@ export class TelegramApi {
     text: string,
     replyMarkup?: InlineKeyboardMarkup,
   ): Promise<SentMessage> {
-    return this.#request<SentMessage>("editMessageText", {
+    return this.#mutateChat(chatId, "editMessageText", () => this.#request<SentMessage>("editMessageText", {
       chat_id: chatId,
       message_id: messageId,
       text,
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
       ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-    });
+    }));
   }
 
   public deleteMessage(chatId: number, messageId: number): Promise<boolean> {
-    return this.#request<boolean>("deleteMessage", {
+    return this.#mutateChat(chatId, "deleteMessage", () => this.#request<boolean>("deleteMessage", {
       chat_id: chatId,
       message_id: messageId,
-    });
+    }));
   }
 
   public answerCallback(callbackQueryId: string, text?: string, showAlert = false): Promise<boolean> {
@@ -226,6 +257,6 @@ export class TelegramApi {
     form.set("chat_id", String(chatId));
     form.set("document", await openAsBlob(filePath), basename(filePath));
     if (caption) form.set("caption", caption);
-    return this.#request<SentMessage>("sendDocument", form);
+    return this.#mutateChat(chatId, "sendDocument", () => this.#request<SentMessage>("sendDocument", form));
   }
 }

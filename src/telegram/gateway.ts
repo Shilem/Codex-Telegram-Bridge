@@ -59,7 +59,7 @@ export class TelegramInteractiveGateway extends EventEmitter implements Interact
   }
 
   public attachProgress(taskId: string, messageId: number): void {
-    this.#progress.set(taskId, new TelegramProgressMessage(this.api, this.chatId, messageId, this.logger));
+    this.#progress.set(taskId, new TelegramProgressMessage(this.api, this.chatId, messageId, taskId, this.logger));
   }
 
   public progress(task: TaskRecord, text: string): void {
@@ -101,13 +101,21 @@ export class TelegramInteractiveGateway extends EventEmitter implements Interact
   }
 
   public async final(task: TaskRecord, text: string): Promise<void> {
+    await this.#terminal(task, text, "最终结果", "任务已完成，但没有可公开的文本结果。");
+  }
+
+  public async failure(task: TaskRecord, text: string): Promise<void> {
+    await this.#terminal(task, text, "任务失败", "任务未完成，详情请检查本机服务日志。");
+  }
+
+  async #terminal(task: TaskRecord, text: string, title: string, fallback: string): Promise<void> {
     await this.#removeToolCard(task.id);
     const progress = this.#progress.get(task.id);
     this.#progress.delete(task.id);
     const chunks = splitTelegramText(text, 3800);
-    const firstChunk = chunks[0] ?? "任务已完成，但没有可公开的文本结果。";
+    const firstChunk = chunks[0] ?? fallback;
     const renderChunk = (chunk: string, index: number): string =>
-      `<b>最终结果${chunks.length > 1 ? ` ${index + 1}/${chunks.length}` : ""}</b>\n\n${escapeHtml(chunk)}`;
+      `<b>${title}${chunks.length > 1 ? ` ${index + 1}/${chunks.length}` : ""}</b>\n\n${escapeHtml(chunk)}`;
     if (progress) {
       await progress.finalize(renderChunk(firstChunk, 0));
     } else {
@@ -136,6 +144,13 @@ export class TelegramInteractiveGateway extends EventEmitter implements Interact
   }
 
   public async requestApproval(task: TaskRecord, card: ApprovalCard): Promise<ApprovalChoice> {
+    const buttonByDecision = {
+      accept: { text: "允许一次", code: "a" },
+      accept_for_session: { text: "本会话允许", code: "s" },
+      decline: { text: "拒绝", code: "d" },
+      cancel: { text: "取消任务", code: "c" },
+    } as const;
+    if (card.availableDecisions.length === 0) throw new Error("审批卡缺少可用决定");
     const binding = {
       requestId: card.requestId,
       threadId: card.threadId,
@@ -143,6 +158,15 @@ export class TelegramInteractiveGateway extends EventEmitter implements Interact
       itemId: card.itemId,
     };
     const token = this.approvalManager.create(binding, card.expiresAt);
+    const buttons = card.availableDecisions.map((decision) => ({
+      text: buttonByDecision[decision].text,
+      callback_data: `approval:${token}:${buttonByDecision[decision].code}`,
+    }));
+    const keyboard = buttons.reduce<Array<typeof buttons>>((rows, button, index) => {
+      if (index % 2 === 0) rows.push([button]);
+      else rows.at(-1)?.push(button);
+      return rows;
+    }, []);
     const details = [
       `<b>需要审批 · ${escapeHtml(task.id.slice(0, 8))}</b>`,
       `项目：${escapeHtml(card.project.name)}`,
@@ -153,16 +177,7 @@ export class TelegramInteractiveGateway extends EventEmitter implements Interact
       `有效期：${new Date(card.expiresAt).toLocaleString("zh-CN")}`,
     ].filter(Boolean).join("\n");
     await this.api.sendMessage(this.chatId, details, {
-      inline_keyboard: [
-        [
-          { text: "允许一次", callback_data: `approval:${token}:a` },
-          { text: "本会话允许", callback_data: `approval:${token}:s` },
-        ],
-        [
-          { text: "拒绝", callback_data: `approval:${token}:d` },
-          { text: "取消任务", callback_data: `approval:${token}:c` },
-        ],
-      ],
+      inline_keyboard: keyboard,
     });
     return new Promise<ApprovalChoice>((resolve, reject) => {
       const timer = setTimeout(() => {

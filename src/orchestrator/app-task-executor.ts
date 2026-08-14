@@ -46,6 +46,7 @@ export interface ApprovalCard {
   cwd?: string;
   reason?: string;
   grantRoot?: string;
+  availableDecisions: readonly ApprovalChoice[];
   expiresAt: number;
 }
 
@@ -54,6 +55,7 @@ export interface InteractiveGateway {
   plan(task: TaskRecord, summary: string): Promise<void>;
   tool(task: TaskRecord, activity: ToolActivity): Promise<void>;
   final(task: TaskRecord, text: string): Promise<void>;
+  failure(task: TaskRecord, text: string): Promise<void>;
   artifact(task: TaskRecord, filePath: string, projectRoot: string): Promise<void>;
   requestApproval(task: TaskRecord, card: ApprovalCard): Promise<ApprovalChoice>;
   requestInput(task: TaskRecord, request: ServerRequest<RequestUserInputParams>): Promise<Record<string, string[]>>;
@@ -66,6 +68,8 @@ interface ActiveTurn {
   threadId: string;
   turnId: string;
   sequence: number;
+  agentMessages: Map<string, { phase: string | null; text: string }>;
+  latestAgentMessageId: string | null;
   finalText: string;
   resolve: () => void;
   reject: (error: Error) => void;
@@ -84,6 +88,21 @@ function stringValue(value: unknown): string | null {
 function sandboxFor(profile: PermissionProfile): "read-only" | "workspace-write" | "danger-full-access" {
   if (profile === "workspace-write + on-request") return "workspace-write";
   return profile;
+}
+
+function renderTaskFailure(error: Error): string {
+  if (/token_invalidated|authentication token has been invalidated|access token could not be refreshed|please sign in again|\b401\b/i.test(error.message)) {
+    return [
+      "原因：本机 Codex 登录已失效或已切换账号。",
+      "影响：本次任务未执行完成。",
+      "下一步：请在此 Mac 的 Codex 或 ChatGPT 中重新登录；Bridge 重启后重新发送任务。",
+    ].join("\n");
+  }
+  return [
+    `原因：${error.message.slice(0, 1_200)}`,
+    "影响：本次任务未执行完成。",
+    "下一步：运行 /health 检查本机服务，处理后重新发送任务。",
+  ].join("\n");
 }
 
 export class AppServerTaskExecutor implements TaskExecutor {
@@ -140,88 +159,96 @@ export class AppServerTaskExecutor implements TaskExecutor {
   }
 
   public async execute(task: TaskRecord): Promise<void> {
-    if (!task.prompt) throw new BridgeError("任务正文已过期或为空，无法执行", "TASK_BODY_MISSING");
-    if (this.#current) throw new BridgeError("全局已有 Codex 任务在运行", "GLOBAL_TASK_BUSY");
-    const project = this.store.project(task.projectId);
-    const localConfig = await this.appServer.request<ConfigReadResponse>("config/read", {
-      includeLayers: false,
-      cwd: project.rootPath,
-    });
-    const effectiveModel = project.defaultModel ?? localConfig.config.model;
-    const effectiveEffort = project.defaultEffort ?? localConfig.config.model_reasoning_effort;
-    const effectiveServiceTier = project.serviceTier ?? localConfig.config.service_tier ?? "default";
-    const profile = project.permissionProfile;
-    if (profile === "danger-full-access" && !this.store.dangerLeaseActive(project.id)) {
-      throw new BridgeError("当前项目的完全访问授权已过期", "DANGER_LEASE_REQUIRED");
-    }
-    const existingThreadId = this.store.codexThreadId(project.id, profile);
-    const threadResponse = existingThreadId
-      ? await this.appServer.resumeThread({
-          threadId: existingThreadId,
-          cwd: project.rootPath,
-          runtimeWorkspaceRoots: [project.rootPath],
-          serviceTier: project.serviceTier,
-          approvalPolicy: profile === "danger-full-access" ? "never" : "on-request",
-          sandbox: sandboxFor(profile),
-          excludeTurns: true,
-        })
-      : await this.appServer.startThread({
-          cwd: project.rootPath,
-          runtimeWorkspaceRoots: [project.rootPath],
-          model: project.defaultModel,
-          serviceTier: project.serviceTier,
-          approvalPolicy: profile === "danger-full-access" ? "never" : "on-request",
-          sandbox: sandboxFor(profile),
-          ephemeral: false,
-        });
-    const threadId = threadResponse.thread.id;
-    this.logger.info({
-      taskId: task.id,
-      projectId: project.id,
-      model: threadResponse.model,
-      modelSource: project.defaultModel ? "project" : "local",
-      reasoningEffort: effectiveEffort,
-      reasoningEffortSource: project.defaultEffort ? "project" : "local",
-      serviceTier: threadResponse.serviceTier ?? effectiveServiceTier,
-      serviceTierSource: project.serviceTier ? "project" : "local",
-    }, "Codex 任务运行配置已解析");
-    this.gateway.progress(
-      task,
-      `运行配置：${threadResponse.model || effectiveModel || "未设置"} · ${effectiveEffort ?? "模型默认"} · ${threadResponse.serviceTier ?? effectiveServiceTier}`,
-    );
-    if (!existingThreadId) this.store.saveThread(project.id, threadId, profile);
-    const input: UserInput[] = [{ type: "text", text: task.prompt, text_elements: [] }];
-    const turnResponse = await this.appServer.startTurn({
-      threadId,
-      input,
-      cwd: project.rootPath,
-      runtimeWorkspaceRoots: [project.rootPath],
-      model: project.defaultModel,
-      serviceTier: project.serviceTier,
-      effort: project.defaultEffort,
-      summary: "concise",
-    });
-    const turnId = turnResponse.turn.id;
-    this.store.bindTask(task.id, threadId, turnId);
-    await new Promise<void>((resolve, reject) => {
-      const active: ActiveTurn = {
-        task,
-        project,
-        threadId,
-        turnId,
-        sequence: 0,
-        finalText: "",
-        resolve,
-        reject,
-      };
-      this.#activeTurns.set(`${threadId}:${turnId}`, active);
-      this.#current = active;
-      const early = this.#earlyNotifications.get(`${threadId}:${turnId}`) ?? [];
-      this.#earlyNotifications.delete(`${threadId}:${turnId}`);
-      for (const notification of early) {
-        this.#notificationQueue = this.#notificationQueue.then(() => this.#handleNotification(notification));
+    try {
+      if (!task.prompt) throw new BridgeError("任务正文已过期或为空，无法执行", "TASK_BODY_MISSING");
+      if (this.#current) throw new BridgeError("全局已有 Codex 任务在运行", "GLOBAL_TASK_BUSY");
+      const project = this.store.project(task.projectId);
+      const localConfig = await this.appServer.request<ConfigReadResponse>("config/read", {
+        includeLayers: false,
+        cwd: project.rootPath,
+      });
+      const effectiveModel = project.defaultModel ?? localConfig.config.model;
+      const effectiveEffort = project.defaultEffort ?? localConfig.config.model_reasoning_effort;
+      const effectiveServiceTier = project.serviceTier ?? localConfig.config.service_tier ?? "default";
+      const profile = project.permissionProfile;
+      if (profile === "danger-full-access" && !this.store.dangerLeaseActive(project.id)) {
+        throw new BridgeError("当前项目的完全访问授权已过期", "DANGER_LEASE_REQUIRED");
       }
-    });
+      const existingThreadId = this.store.codexThreadId(project.id, profile);
+      const threadResponse = existingThreadId
+        ? await this.appServer.resumeThread({
+            threadId: existingThreadId,
+            cwd: project.rootPath,
+            runtimeWorkspaceRoots: [project.rootPath],
+            serviceTier: project.serviceTier,
+            approvalPolicy: profile === "danger-full-access" ? "never" : "on-request",
+            sandbox: sandboxFor(profile),
+            excludeTurns: true,
+          })
+        : await this.appServer.startThread({
+            cwd: project.rootPath,
+            runtimeWorkspaceRoots: [project.rootPath],
+            model: project.defaultModel,
+            serviceTier: project.serviceTier,
+            approvalPolicy: profile === "danger-full-access" ? "never" : "on-request",
+            sandbox: sandboxFor(profile),
+            ephemeral: false,
+          });
+      const threadId = threadResponse.thread.id;
+      this.logger.info({
+        taskId: task.id,
+        projectId: project.id,
+        model: threadResponse.model,
+        modelSource: project.defaultModel ? "project" : "local",
+        reasoningEffort: effectiveEffort,
+        reasoningEffortSource: project.defaultEffort ? "project" : "local",
+        serviceTier: threadResponse.serviceTier ?? effectiveServiceTier,
+        serviceTierSource: project.serviceTier ? "project" : "local",
+      }, "Codex 任务运行配置已解析");
+      this.gateway.progress(
+        task,
+        `运行配置：${threadResponse.model || effectiveModel || "未设置"} · ${effectiveEffort ?? "模型默认"} · ${threadResponse.serviceTier ?? effectiveServiceTier}`,
+      );
+      if (!existingThreadId) this.store.saveThread(project.id, threadId, profile);
+      const input: UserInput[] = [{ type: "text", text: task.prompt, text_elements: [] }];
+      const turnResponse = await this.appServer.startTurn({
+        threadId,
+        input,
+        cwd: project.rootPath,
+        runtimeWorkspaceRoots: [project.rootPath],
+        model: project.defaultModel,
+        serviceTier: project.serviceTier,
+        effort: project.defaultEffort,
+        summary: "concise",
+      });
+      const turnId = turnResponse.turn.id;
+      this.store.bindTask(task.id, threadId, turnId);
+      await new Promise<void>((resolve, reject) => {
+        const active: ActiveTurn = {
+          task,
+          project,
+          threadId,
+          turnId,
+          sequence: 0,
+          agentMessages: new Map(),
+          latestAgentMessageId: null,
+          finalText: "",
+          resolve,
+          reject,
+        };
+        this.#activeTurns.set(`${threadId}:${turnId}`, active);
+        this.#current = active;
+        const early = this.#earlyNotifications.get(`${threadId}:${turnId}`) ?? [];
+        this.#earlyNotifications.delete(`${threadId}:${turnId}`);
+        for (const notification of early) {
+          this.#notificationQueue = this.#notificationQueue.then(() => this.#handleNotification(notification));
+        }
+      });
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      if (this.store.getTask(task.id)?.status !== "cancelled") await this.#notifyFailure(task, normalized);
+      throw normalized;
+    }
   }
 
   public async cancel(task: TaskRecord): Promise<void> {
@@ -248,18 +275,31 @@ export class AppServerTaskExecutor implements TaskExecutor {
       return;
     }
     active.sequence += 1;
+    const notificationItem = objectValue(params.item);
     this.store.appendTaskEvent(active.task.id, active.sequence, notification.method, {
       method: notification.method,
-      itemType: stringValue(objectValue(params.item)?.type),
+      itemId: stringValue(notificationItem?.id) ?? stringValue(params.itemId),
+      itemType: stringValue(notificationItem?.type),
+      phase: stringValue(notificationItem?.phase),
       status: stringValue(objectValue(params.turn)?.status) ?? stringValue(params.status),
     });
     switch (notification.method) {
       case "item/agentMessage/delta": {
         const delta = stringValue(params.delta);
-        if (delta) {
-          active.finalText += delta;
-          this.gateway.progress(active.task, active.finalText);
+        if (!delta) break;
+        const itemId = stringValue(params.itemId) ?? active.latestAgentMessageId;
+        if (!itemId) {
+          this.logger.warn({ taskId: active.task.id, threadId, turnId }, "Agent 消息增量缺少 itemId，等待权威完成事件");
+          break;
         }
+        let message = active.agentMessages.get(itemId);
+        if (!message) {
+          message = { phase: null, text: "" };
+          active.agentMessages.set(itemId, message);
+          this.logger.warn({ taskId: active.task.id, threadId, turnId, itemId }, "Agent 消息增量早于开始事件");
+        }
+        message.text += delta;
+        this.gateway.progress(active.task, message.text);
         break;
       }
       case "turn/plan/updated": {
@@ -272,9 +312,26 @@ export class AppServerTaskExecutor implements TaskExecutor {
         const item = objectValue(params.item);
         const itemType = item ? stringValue(item.type) : null;
         if (itemType === "agentMessage") {
+          const itemId = item ? stringValue(item.id) : null;
           const authoritativeText = item ? stringValue(item.text) : null;
           const phase = item ? stringValue(item.phase) : null;
-          if (authoritativeText && phase !== "commentary") active.finalText = authoritativeText;
+          if (!itemId) {
+            this.logger.warn({ taskId: active.task.id, threadId, turnId, phase }, "Agent 消息生命周期事件缺少 itemId");
+          } else if (notification.method === "item/started") {
+            active.agentMessages.set(itemId, { phase, text: authoritativeText ?? "" });
+            active.latestAgentMessageId = itemId;
+          } else {
+            const message = active.agentMessages.get(itemId) ?? { phase, text: "" };
+            message.phase = phase ?? message.phase;
+            if (authoritativeText !== null) message.text = authoritativeText;
+            active.agentMessages.set(itemId, message);
+            if (message.phase === "commentary") {
+              if (message.text) this.gateway.progress(active.task, message.text);
+            } else if (message.text) {
+              active.finalText = message.text;
+            }
+            if (active.latestAgentMessageId === itemId) active.latestAgentMessageId = null;
+          }
         }
         if (itemType === "imageGeneration") {
           const savedPath = item ? stringValue(item.savedPath) : null;
@@ -325,6 +382,16 @@ export class AppServerTaskExecutor implements TaskExecutor {
     const active = await this.#waitForActive(request.params.threadId, request.params.turnId);
     this.store.transitionTask(active.task.id, "waiting_approval");
     try {
+      const rawDecisions = request.params.availableDecisions ?? ["accept", "acceptForSession", "decline", "cancel"];
+      const availableDecisions = rawDecisions.flatMap((decision): ApprovalChoice[] => {
+        if (decision === "acceptForSession") return ["accept_for_session"];
+        if (decision === "accept" || decision === "decline" || decision === "cancel") return [decision];
+        this.logger.warn({ taskId: active.task.id, decisionType: typeof decision }, "App Server 提供了 Telegram 尚不支持的审批决定");
+        return [];
+      });
+      if (availableDecisions.length === 0) {
+        throw new BridgeError("App Server 未提供可执行的审批决定", "APPROVAL_DECISIONS_EMPTY");
+      }
       const choice = await this.gateway.requestApproval(active.task, {
         requestId: String(request.id),
         threadId: request.params.threadId,
@@ -335,11 +402,11 @@ export class AppServerTaskExecutor implements TaskExecutor {
         ...(request.params.command ? { command: request.params.command } : {}),
         ...(request.params.cwd ? { cwd: request.params.cwd } : {}),
         ...(request.params.reason ? { reason: request.params.reason } : {}),
+        availableDecisions,
         expiresAt: Date.now() + 10 * 60_000,
       });
       const decision = choice === "accept_for_session" ? "acceptForSession" : choice;
-      const available = request.params.availableDecisions;
-      if (available && !available.includes(decision)) {
+      if (!availableDecisions.includes(choice)) {
         throw new BridgeError("所选审批决定不在 App Server 允许范围内", "APPROVAL_DECISION_NOT_AVAILABLE");
       }
       return { decision };
@@ -361,6 +428,7 @@ export class AppServerTaskExecutor implements TaskExecutor {
         kind: "file-change",
         ...(request.params.reason ? { reason: request.params.reason } : {}),
         ...(request.params.grantRoot ? { grantRoot: request.params.grantRoot } : {}),
+        availableDecisions: ["accept", "accept_for_session", "decline", "cancel"],
         expiresAt: Date.now() + 10 * 60_000,
       });
       return { decision: choice === "accept_for_session" ? "acceptForSession" : choice };
@@ -406,6 +474,15 @@ export class AppServerTaskExecutor implements TaskExecutor {
     this.#activeTurns.delete(`${active.threadId}:${active.turnId}`);
     if (this.#current === active) this.#current = null;
     active.reject(error);
+  }
+
+  async #notifyFailure(task: TaskRecord, error: Error): Promise<void> {
+    try {
+      await this.gateway.failure(task, renderTaskFailure(error));
+    } catch (notificationError) {
+      const normalized = notificationError instanceof Error ? notificationError : new Error(String(notificationError));
+      this.logger.error({ taskId: task.id, error: normalized.message, originalError: error.message }, "发送 Telegram 任务失败提示失败");
+    }
   }
 
   #resumeWaitingTask(taskId: string, expected: TaskStatus): void {

@@ -12,9 +12,9 @@ describe("Telegram 命令菜单", () => {
     expect(CODEX_COMMANDS.every(({ description }) => description.startsWith("Codex｜"))).toBe(true);
     expect(BRIDGE_COMMANDS.every(({ description }) => description.startsWith("Bridge｜"))).toBe(true);
     expect(new Set(TELEGRAM_COMMANDS.map(({ command }) => command)).size).toBe(TELEGRAM_COMMANDS.length);
-    expect(TELEGRAM_COMMANDS).toHaveLength(14);
+    expect(TELEGRAM_COMMANDS).toHaveLength(17);
     expect(TELEGRAM_COMMANDS.map(({ command }) => command)).toEqual([
-      "new", "sessions", "tasks", "model", "effort", "fast", "permissions",
+      "new", "sessions", "tasks", "quota", "cancel", "stop", "model", "effort", "fast", "permissions",
       "help", "project", "status", "ping", "health", "cleanup", "update",
     ]);
   });
@@ -24,5 +24,6 @@ describe("Telegram 命令菜单", () => {
     expect(help).toContain("<b>Codex 工作流</b>");
     expect(help).toContain("<b>Bridge 管理</b>");
     for (const { command } of TELEGRAM_COMMANDS) expect(help).toContain(`<code>/${command}</code>`);
+    expect(help).not.toContain("兼容命令（菜单中隐藏）</b>\n<code>/cancel</code>");
   });
 });

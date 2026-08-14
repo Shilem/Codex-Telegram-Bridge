@@ -236,6 +236,9 @@ Telegram 的 `/` 菜单分为两类。
 | `/new` | 下一条任务使用新会话 |
 | `/sessions` | 查看、恢复或交回会话 |
 | `/tasks` | 查看、取消或安全重试任务 |
+| `/quota` | 查询 Codex 剩余额度、窗口和重置时间 |
+| `/cancel [任务ID]` | 取消当前任务，或按 ID/前缀取消指定任务 |
+| `/stop` | 立即停止当前任务，等同于 `/cancel` |
 | `/model` | 选择模型 |
 | `/effort` | 选择思考深度 |
 | `/fast` | 查看或切换 Fast 档位 |
@@ -253,7 +256,7 @@ Telegram 的 `/` 菜单分为两类。
 | `/cleanup` | 清理超过保留期的数据 |
 | `/update` | 检查并确认签名更新 |
 
-这些兼容命令默认不占用菜单位置：`/start`、`/projects`、`/resume`、`/handback`、`/cancel`、`/retry` 和 `/version`。
+这些兼容命令默认不占用菜单位置：`/start`、`/projects`、`/resume`、`/handback`、`/retry` 和 `/version`。
 
 ## 更新和卸载
 

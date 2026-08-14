@@ -2,7 +2,7 @@
 import { statfs } from "node:fs/promises";
 import { join } from "node:path";
 
-import { AppServerClient, CodexModelStateProvider, ProcessAppServerTransport } from "./app-server/index.js";
+import { AppServerClient, CodexModelStateProvider, CodexRateLimitProvider, ProcessAppServerTransport } from "./app-server/index.js";
 import { loadConfig, readBotToken } from "./core/config.js";
 import { acquireInstanceLock } from "./core/instance-lock.js";
 import { createLogger } from "./core/logger.js";
@@ -87,6 +87,7 @@ async function main(): Promise<void> {
   });
   await appServer.start();
   const models = new CodexModelStateProvider(appServer, logger);
+  const quota = new CodexRateLimitProvider(appServer);
   void models.list().then((available) => {
     logger.info({ modelCount: available.length }, "Codex 本机模型目录读取成功");
   }).catch((error: unknown) => {
@@ -152,6 +153,7 @@ async function main(): Promise<void> {
     media,
     gateway,
     health,
+    quota,
     models,
     updates,
     config,

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TelegramApi } from "../../src/telegram/api.js";
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -47,5 +48,51 @@ describe("Telegram API", () => {
     expect(first).toMatchObject({ scope: { type: "all_private_chats" } });
     expect(first).not.toHaveProperty("language_code");
     expect(second).toMatchObject({ scope: { type: "all_private_chats" }, language_code: "zh" });
+  });
+
+  it("同一聊天的消息变更严格串行并保持一秒间隔", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-13T00:00:00Z"));
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      ok: true,
+      result: { message_id: 7 },
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new TelegramApi("test-token", { debug: vi.fn(), warn: vi.fn() } as never);
+
+    const sent = api.sendMessage(10, "开始");
+    const edited = api.editMessage(10, 7, "进度");
+    await sent;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await edited;
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("按 retry_after 等待，并在持续限流时保留可诊断错误", async () => {
+    vi.useFakeTimers();
+    const logger = { debug: vi.fn(), warn: vi.fn() };
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      ok: false,
+      error_code: 429,
+      description: "Too Many Requests",
+      parameters: { retry_after: 2 },
+    }), { status: 429, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new TelegramApi("test-token", logger as never);
+
+    const edited = api.editMessage(10, 7, "进度");
+    const assertion = expect(edited).rejects.toThrow("触发限流，2 秒后可重试");
+    await vi.advanceTimersByTimeAsync(4_000);
+    await assertion;
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "editMessageText", retryAfterSeconds: 2 }),
+      "Telegram API 触发限流",
+    );
   });
 });

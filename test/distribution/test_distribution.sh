@@ -37,7 +37,8 @@ process.exit(0)
 EOF
 
 HOME="$TMP/home" PATH="$TMP/bin:$PATH" \
-CTB_INSTALL_ROOT="$TMP/install" CTB_CONFIG_DIR="$TMP/config" CTB_STATE_DIR="$TMP/state" CTB_BIN_DIR="$TMP/user-bin" \
+CTB_INSTALL_ROOT="$TMP/install" CTB_CONFIG_DIR="$TMP/config" CTB_CONFIG_FILE="$TMP/config/config.json" \
+CTB_STATE_DIR="$TMP/state" CTB_BIN_DIR="$TMP/user-bin" \
 CTB_NODE_BIN="$TMP/bin/node24" CTB_CODEX_BIN="$TMP/bin/codex" CTB_PACKAGE_DIR="$TMP/package" \
 CTB_SKIP_DEPENDENCIES=1 CTB_SKIP_SERVICE=1 "$ROOT/scripts/install.sh"
 

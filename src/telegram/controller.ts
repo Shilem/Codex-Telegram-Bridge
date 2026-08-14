@@ -28,6 +28,10 @@ export interface HealthProvider {
   render(): Promise<string>;
 }
 
+export interface QuotaProvider {
+  render(): Promise<string>;
+}
+
 export interface UpdateProvider {
   check(): Promise<{ version: string }>;
   install(expectedVersion: string): Promise<void>;
@@ -59,6 +63,7 @@ export class TelegramController {
     private readonly media: MediaManager,
     private readonly gateway: TelegramInteractiveGateway,
     private readonly health: HealthProvider,
+    private readonly quota: QuotaProvider,
     private readonly models: ModelProvider,
     private readonly updates: UpdateProvider | null,
     private readonly config: BridgeConfig,
@@ -217,7 +222,8 @@ export class TelegramController {
         await this.api.sendMessage(message.chat.id, menu.text, menu.keyboard);
         return "task_menu";
       }
-      case "cancel": {
+      case "cancel":
+      case "stop": {
         const taskId = args[0] ? this.#resolveTaskId(args[0]) : this.scheduler.currentTask?.id;
         if (!taskId) throw new BridgeError("没有可取消的任务", "TASK_NOT_FOUND");
         await this.scheduler.cancel(taskId);
@@ -319,6 +325,9 @@ export class TelegramController {
       case "health":
         await this.api.sendMessage(message.chat.id, await this.health.render());
         return "health";
+      case "quota":
+        await this.api.sendMessage(message.chat.id, await this.quota.render());
+        return "quota";
       case "cleanup": {
         const token = this.approvals.create({ requestId: "cleanup", threadId: "maintenance", turnId: "cleanup", itemId: String(ownerId) }, Date.now() + 10 * 60_000);
         await this.api.sendMessage(message.chat.id, `<b>确认本地清理</b>\n附件与产物：超过 ${this.config.attachmentRetentionHours} 小时\n任务正文：超过 ${this.config.taskRetentionDays} 天\n脱敏审计：超过 ${this.config.auditRetentionDays} 天\n\n不会删除项目源码。`, { inline_keyboard: [[{ text: "确认清理", callback_data: `cl:${token}` }], [{ text: "取消", callback_data: `noop:${token}` }]] });
