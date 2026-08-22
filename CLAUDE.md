@@ -1,7 +1,41 @@
 # Claude Code / Codex 项目约定
 
-请遵守 `AGENTS.md`、`AGENT_BEHAVIOR.md` 和 `BUG_LOG.md`。开始修改前使用 CodeGraph 定位符号与调用链；不要读取或输出用户真实配置、Token、SQLite 数据库、日志和附件。
+本项目的长期工程约束统一维护在 `AGENTS.md`，请完整遵守；历史问题、修复与决策统一从 Projectmem 读取。不要在本文件复制项目规范，避免多份规则漂移。
 
-实现必须保持以下不变量：仅私聊且唯一 owner；全局单运行任务；项目必须由主机预注册；App Server 只使用 stdio；SQLite update/task/approval 事务与崩溃恢复；callback 一次性绑定；完全访问双确认和十五分钟租约；隐藏推理不外发。Plan 模式从 App Server `collaborationMode/list` 读取官方预设，以完成的 `plan` item 定稿；执行按钮必须恢复原 Codex thread 并切回 Default 模式。
+<!-- >>> projectmem bridge >>> -->
+## projectmem (MANDATORY)
 
-提交前运行 `npm run check`。修改安装、迁移、更新或回滚时，再运行 `test/distribution/test_distribution.sh` 和 Shell 语法检查。真实 Bot、三平台服务重启、真实读写审批及自动回滚属于独立人工验收，不能用单元测试冒充。
+This project uses projectmem for persistent memory + workflow rules.
+
+SESSION START — call these three MCP tools, in this order, BEFORE
+answering ANY question about this project:
+
+  1. `get_instructions()` — loads the project's mandatory workflow
+     rules. Without this you will not know how to log work
+     correctly, when to use `add_note` vs `add_decision`, or how
+     the event log is structured.
+  2. `get_summary()` — loads project content. Do NOT answer from
+     conversation history or by re-reading package.json / README /
+     source files.
+  3. `get_project_map()` — loads structural layout when relevant.
+
+BEFORE modifying ANY file:
+  - Call `precheck_file(path)` — check failure history first.
+
+DURING work — use MCP write tools, NEVER edit `.projectmem/`
+files directly via filesystem write:
+  - On a bug discovery → `log_issue(summary, location)`.
+  - After each fix attempt → `record_attempt(summary, outcome)`.
+  - After confirmation → `record_fix(summary)`.
+  - On a design choice → `add_decision(summary)`.
+  - On a gotcha / setup detail → `add_note(summary)`.
+
+Editing `.projectmem/summary.md` or `.projectmem/events.jsonl`
+directly bypasses event logging and breaks audit replay. The summary
+file regenerates from `events.jsonl` automatically — write via the
+MCP tools and the summary will follow. `PROJECT_MAP.md` and `plan.md`
+are maintained directly according to the Projectmem instructions.
+
+Do not re-scan source files when MCP tools can give you the same
+answer in ~500 tokens instead of ~5000. This is not optional.
+<!-- <<< projectmem bridge <<< -->

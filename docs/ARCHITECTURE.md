@@ -2,12 +2,12 @@
 
 ## 目标与边界
 
-Codex Telegram Bridge 1.0 是单用户、单 Bot、自托管的远程开发客户端。服务不监听 HTTP 或 WebSocket 端口，只在本机启动 `codex app-server --listen stdio://`。所有工作区必须由主机 CLI 预注册，全局最多运行一个 Codex turn。
+Codex Telegram Bridge 是单用户、单 Bot、自托管的远程开发客户端。服务不监听 HTTP 或 WebSocket 端口，只在本机启动 `codex app-server --listen stdio://`。所有工作区必须由主机 CLI 预注册，全局最多运行一个 Codex turn。
 
 ## 模块
 
 - `src/telegram/`：Bot API 长轮询、消息编辑、按钮、附件下载、速率限制和命令路由。
-- `src/app-server/`：JSONL JSON-RPC transport、initialize、thread、turn、interrupt、通知和服务端请求。
+- `src/app-server/`：基于 JSONL 的 JSON-RPC transport、initialize、thread、turn、interrupt、通知和服务端请求。
 - `src/storage/`：SQLite WAL、事务迁移、任务状态机、Telegram update 幂等、thread/turn 绑定。
 - `src/security/`：本机配对、owner 鉴权、项目 realpath 边界、审批 nonce、危险权限租约和脱敏审计。
 - `src/scheduler/`：全局 FIFO 单任务队列。
@@ -38,18 +38,22 @@ PRAGMA synchronous=FULL
 PRAGMA busy_timeout=5000
 ```
 
-迁移在事务中执行，版本记录在 `schema_migrations`。核心表为 `owners`、`projects`、`threads`、`telegram_updates`、`tasks`、`task_events`、`approvals`、`permission_leases`、`audit_events` 和 `runtime_settings`。
+迁移在事务中执行，版本记录在 `schema_migrations`。核心业务表为 `owners`、`pairing_codes`、`projects`、`threads`、`telegram_updates`、`tasks`、`task_events`、`approvals`、`permission_leases`、`audit_events` 和 `runtime_settings`。
 
 任务状态：
 
 ```text
-received → queued → running → waiting_input / waiting_approval
-                         └──→ completed / failed / cancelled / unknown
+received → queued → running
+running ↔ waiting_input / waiting_approval
+running → completed / failed / cancelled / unknown
+waiting_* → failed / cancelled / unknown
 unknown → queued / completed / failed / cancelled（仅显式操作）
 ```
 
+`received`、`queued` 也可在执行前进入 `failed` 或 `cancelled`；等待输入或审批的任务可恢复为 `running`，也可进入失败、取消或 `unknown`。
+
 ## App Server 协议
 
-客户端使用本机生成的 `codex app-server generate-ts --experimental` 类型校准协议。握手顺序为 `initialize` → `initialized`，主要方法为 `thread/start`、`thread/resume`、`turn/start` 和 `turn/interrupt`。审批绑定 `requestId + threadId + turnId + itemId`。
+协议字段以当前 Codex App Server schema 为准；升级 Codex CLI 时可使用 `codex app-server generate-ts --out <directory>` 生成对照类型，并运行真实 App Server 合约测试。握手顺序为 `initialize` → `initialized`；任务主路径使用 `thread/start`、`thread/resume`、`turn/start` 和 `turn/interrupt`，并通过 `collaborationMode/list`、`config/read`、`model/list` 与账户接口读取实时能力。审批绑定 `requestId + threadId + turnId + itemId`。
 
 参考：[OpenAI App Server](https://learn.chatgpt.com/docs/app-server)。

@@ -78,10 +78,20 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$TMP/private.
 openssl rsa -pubout -in "$TMP/private.pem" -out "$TMP/public.pem" >/dev/null 2>&1
 openssl dgst -sha256 -sign "$TMP/private.pem" -out "$TMP/manifest.sig" "$TMP/manifest.json"
 
-HOME="$TMP/home" PATH="$TMP/bin:$PATH" \
-CTB_INSTALL_ROOT="$TMP/install" CTB_CONFIG_DIR="$TMP/config" CTB_STATE_DIR="$TMP/state" CTB_BIN_DIR="$TMP/user-bin" \
-CTB_NODE_BIN="$TMP/bin/node24" CTB_CODEX_BIN="$TMP/bin/codex" CTB_SKIP_DEPENDENCIES=1 CTB_SKIP_SERVICE=1 \
-  "$ROOT/scripts/update.sh" --manifest "$TMP/manifest.json" --signature "$TMP/manifest.sig" --archive "$TMP/release.tgz" --public-key "$TMP/public.pem"
+UPDATE_OUTPUT=$(HOME="$TMP/home" PATH="$TMP/bin:$PATH" \
+  CTB_INSTALL_ROOT="$TMP/install" CTB_CONFIG_DIR="$TMP/config" CTB_STATE_DIR="$TMP/state" CTB_BIN_DIR="$TMP/user-bin" \
+  CTB_NODE_BIN="$TMP/bin/node24" CTB_CODEX_BIN="$TMP/bin/codex" CTB_SKIP_DEPENDENCIES=1 CTB_SKIP_SERVICE=1 \
+  "$ROOT/scripts/update.sh" --manifest "$TMP/manifest.json" --signature "$TMP/manifest.sig" --archive "$TMP/release.tgz" --public-key "$TMP/public.pem" 2>&1) || {
+    printf '%s\n' "$UPDATE_OUTPUT" >&2
+    fail "测试模式签名更新失败"
+  }
+case "$UPDATE_OUTPUT" in
+  *"unbound variable"*)
+    printf '%s\n' "$UPDATE_OUTPUT" >&2
+    fail "测试模式签名更新输出了未绑定变量错误"
+    ;;
+esac
+printf '%s\n' "$UPDATE_OUTPUT"
 [ "$(cat "$TMP/install/current/VERSION")" = 1.1.0 ] || fail "签名更新未切换到 1.1.0"
 
 cp "$TMP/manifest.json" "$TMP/tampered.json"

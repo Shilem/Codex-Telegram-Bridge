@@ -1,6 +1,6 @@
 import type { Logger } from "pino";
 
-import type { AppServerClient } from "../app-server/client.js";
+import { AppServerRpcError, type AppServerClient } from "../app-server/client.js";
 import { isPublicAppServerNotification } from "../app-server/notification-policy.js";
 import type {
   CommandApprovalDecision,
@@ -22,7 +22,7 @@ export interface RuntimeStore {
   getTask(taskId: string): TaskRecord | null;
   project(projectId: string): ProjectRecord;
   codexThreadId(projectId: string, permission: PermissionProfile): string | null;
-  saveThread(projectId: string, codexThreadId: string, permission: PermissionProfile): void;
+  saveThread(projectId: string, codexThreadId: string, permission: PermissionProfile, replacedCodexThreadId?: string): void;
   bindTask(taskId: string, threadId: string, turnId: string): void;
   appendTaskEvent(taskId: string, sequence: number, eventType: string, payload: unknown): void;
   transitionTask(taskId: string, status: TaskStatus): void;
@@ -113,6 +113,12 @@ function sandboxFor(profile: PermissionProfile): "read-only" | "workspace-write"
   return profile;
 }
 
+function isArchivedThreadError(error: unknown): error is AppServerRpcError {
+  return error instanceof AppServerRpcError
+    && error.code === -32600
+    && /\bsession\s+\S+\s+is archived\b/i.test(error.message);
+}
+
 function renderTaskFailure(error: Error): string {
   if (/token_invalidated|authentication token has been invalidated|access token could not be refreshed|please sign in again|\b401\b/i.test(error.message)) {
     return [
@@ -199,8 +205,11 @@ export class AppServerTaskExecutor implements TaskExecutor {
         throw new BridgeError("当前项目的完全访问授权已过期", "DANGER_LEASE_REQUIRED");
       }
       const existingThreadId = this.store.codexThreadId(project.id, profile);
-      const threadResponse = existingThreadId
-        ? await this.appServer.resumeThread({
+      let replacedArchivedThread = false;
+      let threadResponse;
+      if (existingThreadId) {
+        try {
+          threadResponse = await this.appServer.resumeThread({
             threadId: existingThreadId,
             cwd: project.rootPath,
             runtimeWorkspaceRoots: [project.rootPath],
@@ -208,8 +217,15 @@ export class AppServerTaskExecutor implements TaskExecutor {
             approvalPolicy: profile === "danger-full-access" ? "never" : "on-request",
             sandbox: sandboxFor(profile),
             excludeTurns: true,
-          })
-        : await this.appServer.startThread({
+          });
+        } catch (error) {
+          if (!isArchivedThreadError(error)) throw error;
+          replacedArchivedThread = true;
+          this.logger.warn({ taskId: task.id, projectId: project.id, threadId: existingThreadId }, "存储的 Codex 会话已归档，将创建替代会话");
+        }
+      }
+      if (!threadResponse) {
+        threadResponse = await this.appServer.startThread({
             cwd: project.rootPath,
             runtimeWorkspaceRoots: [project.rootPath],
             model: project.defaultModel,
@@ -218,6 +234,7 @@ export class AppServerTaskExecutor implements TaskExecutor {
             sandbox: sandboxFor(profile),
             ephemeral: false,
           });
+      }
       const threadId = threadResponse.thread.id;
       const collaborationMode = await this.#resolveCollaborationMode(
         task.collaborationMode,
@@ -239,7 +256,9 @@ export class AppServerTaskExecutor implements TaskExecutor {
         task,
         `运行配置：${threadResponse.model || effectiveModel || "未设置"} · ${effectiveEffort ?? "模型默认"} · ${threadResponse.serviceTier ?? effectiveServiceTier} · ${collaborationMode.mode === "plan" ? "Plan" : "Default"}`,
       );
-      if (!existingThreadId) this.store.saveThread(project.id, threadId, profile);
+      if (!existingThreadId || replacedArchivedThread) {
+        this.store.saveThread(project.id, threadId, profile, replacedArchivedThread ? existingThreadId ?? undefined : undefined);
+      }
       const input: UserInput[] = [{ type: "text", text: task.prompt, text_elements: [] }];
       const turnResponse = await this.appServer.startTurn({
         threadId,

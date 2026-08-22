@@ -97,8 +97,23 @@ export class RuntimeStoreAdapter implements RuntimeStore, SchedulableTaskStore {
     return row?.codex_thread_id ?? null;
   }
 
-  public saveThread(projectId: string, codexThreadId: string, permission: PermissionProfile): void {
-    this.threads.upsert(projectId, codexThreadId, permission);
+  public saveThread(
+    projectId: string,
+    codexThreadId: string,
+    permission: PermissionProfile,
+    replacedCodexThreadId?: string,
+  ): void {
+    this.database.connection.transaction(() => {
+      if (replacedCodexThreadId) {
+        this.database.connection
+          .prepare(
+            `UPDATE threads SET closed_at = ?, updated_at = ?
+             WHERE project_id = ? AND codex_thread_id = ? AND permission_profile = ? AND closed_at IS NULL`,
+          )
+          .run(Date.now(), Date.now(), projectId, replacedCodexThreadId, permission);
+      }
+      this.threads.upsert(projectId, codexThreadId, permission);
+    })();
   }
 
   public bindTask(taskId: string, threadId: string, turnId: string): void {

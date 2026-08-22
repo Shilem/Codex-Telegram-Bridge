@@ -17,10 +17,12 @@ import type {
 import { shortProjectId } from "../security/projects.js";
 import type { BridgeDatabase, TaskLedger } from "../storage/index.js";
 import type { TerminalUpdateAction, UpdateAction } from "../update/action-store.js";
+import type { RestartAction, TerminalRestartAction } from "../update/restart-action-store.js";
 import { cleanupDatabase } from "../runtime/maintenance.js";
 import { RuntimeSettings } from "../runtime/settings.js";
 import type { TelegramApi } from "./api.js";
 import { commandName, escapeHtml } from "./format.js";
+import { VERSION } from "../core/version.js";
 import { renderCommandHelp } from "./commands.js";
 import type { TelegramInteractiveGateway } from "./gateway.js";
 import type { InlineKeyboardMarkup, TelegramCallbackQuery, TelegramMessage, TelegramUpdate } from "./types.js";
@@ -41,6 +43,15 @@ export interface UpdateProvider {
   markNotified(actionId: string): Promise<void>;
 }
 
+export interface RestartProvider {
+  request(target: { chatId: number; messageId: number; sourceUpdateId: number }): Promise<RestartAction>;
+  launchAfterUpdateCommitted(actionId: string): Promise<RestartAction>;
+  cancelUncommitted(actionId: string): Promise<TerminalRestartAction>;
+  pendingActions(): Promise<RestartAction[]>;
+  waitForTerminal(actionId: string): Promise<TerminalRestartAction>;
+  markNotified(actionId: string): Promise<void>;
+}
+
 export interface ModelProvider {
   list(): Promise<AvailableModel[]>;
   localState(cwd: string): Promise<{
@@ -54,6 +65,8 @@ export class TelegramController {
   readonly #settings: RuntimeSettings;
   readonly #attachmentWindows = new Map<number, number[]>();
   readonly #updateMonitors = new Set<string>();
+  readonly #restartMonitors = new Set<string>();
+  readonly #restartActionsPendingCommit = new Map<number, string>();
 
   public constructor(
     private readonly api: TelegramApi,
@@ -73,6 +86,7 @@ export class TelegramController {
     private readonly updates: UpdateProvider | null,
     private readonly config: BridgeConfig,
     private readonly logger: Logger,
+    private readonly restarts: RestartProvider | null = null,
   ) {
     this.#settings = new RuntimeSettings(database);
   }
@@ -117,9 +131,36 @@ export class TelegramController {
   }
 
   public async resumePendingUpdateNotifications(): Promise<void> {
-    if (!this.updates) return;
-    const actions = await this.updates.pendingActions();
-    await Promise.all(actions.map((action) => this.#monitorUpdate(action.actionId)));
+    const monitors: Array<Promise<void>> = [];
+    if (this.updates) {
+      const actions = await this.updates.pendingActions();
+      monitors.push(...actions.map((action) => this.#monitorUpdate(action.actionId)));
+    }
+    if (this.restarts) {
+      const actions = await this.restarts.pendingActions();
+      monitors.push(...actions.flatMap((action) => {
+        if (action.status !== "pending") return [this.#monitorRestart(action.actionId)];
+        if (action.sourceUpdateId === undefined || !this.#telegramUpdateCommitted(action.sourceUpdateId)) {
+          return [this.#cancelUncommittedRestart(action.actionId)];
+        }
+        return [this.launchRestartAfterUpdateCommitted(action.sourceUpdateId)];
+      }));
+    }
+    await Promise.all(monitors);
+  }
+
+  public async launchRestartAfterUpdateCommitted(updateId: number): Promise<void> {
+    if (!this.restarts || !this.#telegramUpdateCommitted(updateId)) return;
+    const actionId = this.#restartActionsPendingCommit.get(updateId)
+      ?? (await this.restarts.pendingActions()).find((action) => action.status === "pending" && action.sourceUpdateId === updateId)?.actionId;
+    if (!actionId) return;
+    this.#restartActionsPendingCommit.delete(updateId);
+    try {
+      await this.restarts.launchAfterUpdateCommitted(actionId);
+      void this.#monitorRestart(actionId);
+    } catch (error) {
+      this.logger.error({ updateId, actionId, error: errorMessage(error) }, "Telegram update 落账后启动独立 Bridge 重启任务失败");
+    }
   }
 
   async #handleMessage(updateId: number, message: TelegramMessage): Promise<string> {
@@ -360,8 +401,18 @@ export class TelegramController {
         await this.api.sendMessage(message.chat.id, `<b>确认本地清理</b>\n附件与产物：超过 ${this.config.attachmentRetentionHours} 小时\n任务正文：超过 ${this.config.taskRetentionDays} 天\n脱敏审计：超过 ${this.config.auditRetentionDays} 天\n\n不会删除项目源码。`, { inline_keyboard: [[{ text: "确认清理", callback_data: `cl:${token}` }], [{ text: "取消", callback_data: `noop:${token}` }]] });
         return "cleanup_confirmation_requested";
       }
+      case "restart": {
+        if (!this.restarts) throw new BridgeError("当前 Bridge 未配置安全重启能力", "RESTART_NOT_CONFIGURED");
+        const token = this.approvals.create({ requestId: "restart", threadId: "maintenance", turnId: "restart", itemId: String(ownerId) }, Date.now() + 10 * 60_000);
+        await this.api.sendMessage(
+          message.chat.id,
+          "<b>确认重启 Bridge</b>\n将由主机服务管理器安全重启当前 Bridge。运行中的任务将标记为 unknown，排队任务会在服务恢复后继续。\n\n不会重放本次 Telegram 操作。",
+          { inline_keyboard: [[{ text: "确认重启 Bridge", callback_data: `restart:${token}` }], [{ text: "取消", callback_data: `noop:${token}` }]] },
+        );
+        return "restart_confirmation_requested";
+      }
       case "version":
-        await this.api.sendMessage(message.chat.id, "Codex Telegram Bridge 1.0.0");
+        await this.api.sendMessage(message.chat.id, `Codex Telegram Bridge ${VERSION}`);
         return "version";
       case "update":
         if (!this.updates) {
@@ -645,6 +696,19 @@ export class TelegramController {
       } finally {
         void this.#monitorUpdate(updateAction.actionId);
       }
+    } else if (action === "restart") {
+      if (!this.restarts) throw new BridgeError("当前 Bridge 未配置安全重启能力", "RESTART_NOT_CONFIGURED");
+      const consumed = this.approvals.consumeAction(parts.join(":"), "accept");
+      if (consumed.requestId !== "restart") throw new BridgeError("重启按钮绑定错误", "CALLBACK_BINDING_MISMATCH");
+      const restartAction = await this.restarts.request({ chatId: message.chat.id, messageId: message.message_id, sourceUpdateId: updateId });
+      this.#restartActionsPendingCommit.set(updateId, restartAction.actionId);
+      await this.api.answerCallback(callback.id, "重启已确认，正在安全提交", true);
+      await this.api.editMessage(
+        message.chat.id,
+        message.message_id,
+        "<b>重启已确认</b>\nTelegram 操作已提交后将由独立 worker 重启服务。运行中的任务会标记为 unknown，恢复后请运行 <code>/health</code> 检查状态。",
+        { inline_keyboard: [] },
+      );
     } else {
       await this.api.answerCallback(callback.id, "操作已取消");
     }
@@ -676,6 +740,47 @@ export class TelegramController {
     } finally {
       this.#updateMonitors.delete(actionId);
     }
+  }
+
+  async #monitorRestart(actionId: string): Promise<void> {
+    if (!this.restarts || this.#restartMonitors.has(actionId)) return;
+    this.#restartMonitors.add(actionId);
+    try {
+      const action = await this.restarts.waitForTerminal(actionId);
+      const elapsedSeconds = Math.max(0, Math.round((action.updatedAt - action.createdAt) / 1000));
+      const text = action.status === "succeeded"
+        ? `<b>Bridge 重启成功</b>\n服务管理器已恢复 Bridge。运行中的任务已标记为 unknown，排队任务会继续处理。\n耗时：${elapsedSeconds} 秒\n下一步：运行 <code>/health</code> 检查服务。`
+        : `<b>Bridge 重启失败</b>\n原因：${escapeHtml(action.result.reason)}\n影响：Bridge 是否仍可用尚未确认。\n下一步：运行 <code>/health</code>；若不可用，请检查主机服务日志。`;
+      try {
+        await this.api.editMessage(action.chatId, action.messageId, text, { inline_keyboard: [] });
+      } catch (error) {
+        this.logger.warn({ actionId, error: errorMessage(error) }, "重启原 Telegram 消息失败，改为发送终态消息");
+        await this.api.sendMessage(action.chatId, text);
+      }
+      await this.restarts.markNotified(actionId);
+      this.logger.info({ actionId, status: action.status, elapsedSeconds }, "Telegram Bridge 重启终态已送达");
+    } catch (error) {
+      this.logger.error({ actionId, error: errorMessage(error) }, "监控独立 Bridge 重启任务失败，保留动作等待下次启动恢复");
+    } finally {
+      this.#restartMonitors.delete(actionId);
+    }
+  }
+
+  async #cancelUncommittedRestart(actionId: string): Promise<void> {
+    if (!this.restarts) return;
+    try {
+      await this.restarts.cancelUncommitted(actionId);
+      await this.#monitorRestart(actionId);
+    } catch (error) {
+      this.logger.error({ actionId, error: errorMessage(error) }, "取消未落账的 Bridge 重启动作失败");
+    }
+  }
+
+  #telegramUpdateCommitted(updateId: number): boolean {
+    const row = this.database.connection
+      .prepare("SELECT status FROM telegram_updates WHERE update_id = ?")
+      .get(updateId) as { status: string } | undefined;
+    return row?.status === "committed";
   }
 
   #activeProjectId(): string {

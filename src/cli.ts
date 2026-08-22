@@ -14,8 +14,8 @@ import { RuntimeSettings } from "./runtime/settings.js";
 import { PairingService, ProjectRegistry } from "./security/index.js";
 import { shortProjectId } from "./security/projects.js";
 import { BridgeDatabase } from "./storage/index.js";
+import { VERSION } from "./core/version.js";
 
-const VERSION = "1.1.1";
 process.umask(0o077);
 
 async function openDatabase(): Promise<{ database: BridgeDatabase; config: Awaited<ReturnType<typeof loadConfig>> }> {

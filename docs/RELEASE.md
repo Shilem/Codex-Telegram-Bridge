@@ -10,13 +10,13 @@ test/distribution/test_distribution.sh
 git diff --check
 ```
 
-CI 在 macOS、Ubuntu 和 Windows 的 Node.js 24 上运行类型检查、lint、Vitest、构建、安装器测试、依赖审计、secret scan 和 SBOM。App Server initialize 合约应使用真实 Codex CLI；模型调用使用受控测试环境。
+CI 的三平台任务在 macOS、Ubuntu 和 Windows 的 Node.js 24 上运行类型检查、lint、Vitest、构建、安装器测试、依赖审计和 SBOM。另外的 Ubuntu 任务执行 secret scan，并使用真实 Codex CLI 验证 App Server initialize 与 Plan/Default 协作模式合约；该合约检查不发起模型任务。
 
 ## 产物
 
 - npm 包与 provenance
 - CycloneDX SBOM
-- release archive
+- 稳定命名的更新归档
 - release manifest（版本、产物名、SHA-256）
 - detached manifest signature
 - `SHA256SUMS`

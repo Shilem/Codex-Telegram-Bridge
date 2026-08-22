@@ -161,6 +161,9 @@ describe("Telegram 交互式管理菜单", () => {
     await command("/quota");
     expect(sent.at(-1)?.text).toContain("剩余 75%");
 
+    await command("/version");
+    expect(sent.at(-1)?.text).toBe("Codex Telegram Bridge 1.1.2");
+
     await command("/plan");
     expect(new RuntimeSettings(database).get(`plan_mode:${first.id}`)).toBe("plan");
     expect(sent.at(-1)?.text).toContain("Plan 模式已开启");

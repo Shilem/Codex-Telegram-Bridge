@@ -1,0 +1,7 @@
+[mcp_servers.projectmem]
+command = "/Users/lemeng.shi/.local/pipx/venvs/projectmem/bin/python"
+args = ["-m", "projectmem.mcp_server", "--root", "/Users/lemeng.shi/Desktop/Codex-Telegram-Bridge"]
+cwd = "/Users/lemeng.shi/Desktop/Codex-Telegram-Bridge"
+required = true
+startup_timeout_sec = 10
+tool_timeout_sec = 60

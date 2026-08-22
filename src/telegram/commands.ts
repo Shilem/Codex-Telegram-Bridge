@@ -25,6 +25,7 @@ export const BRIDGE_COMMANDS: readonly TelegramBotCommand[] = [
   { command: "health", description: "Bridge｜执行完整健康检查" },
   { command: "cleanup", description: "Bridge｜清理过期本地数据" },
   { command: "update", description: "Bridge｜检查签名版本更新" },
+  { command: "restart", description: "Bridge｜安全重启当前 Bridge 服务" },
 ];
 
 export const TELEGRAM_COMMANDS: readonly TelegramBotCommand[] = [

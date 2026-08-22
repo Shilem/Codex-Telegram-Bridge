@@ -1,7 +1,7 @@
 import pino from "pino";
 import { describe, expect, it, vi } from "vitest";
 
-import type { AppServerClient } from "../../src/app-server/client.js";
+import { AppServerRpcError, type AppServerClient } from "../../src/app-server/client.js";
 import type { CommandApprovalRequest, ServerNotification, ServerRequest } from "../../src/app-server/types.js";
 import type { ProjectRecord, TaskRecord } from "../../src/core/types.js";
 import { AppServerTaskExecutor, type InteractiveGateway, type RuntimeStore } from "../../src/orchestrator/app-task-executor.js";
@@ -48,6 +48,63 @@ function appServerRequest(method: string): Promise<unknown> {
 }
 
 describe("App Server 任务失败反馈", () => {
+  it("当前会话已归档时创建替代会话并继续任务", async () => {
+    let notificationListener: ((notification: ServerNotification) => void) | undefined;
+    const startTurn = vi.fn(() => Promise.resolve({ turn: { id: "turn-replacement" } }));
+    const appServer = {
+      request: vi.fn(appServerRequest),
+      resumeThread: vi.fn(() => Promise.reject(new AppServerRpcError({
+        code: -32600,
+        message: "session archived-thread is archived. Run `codex unarchive archived-thread` to unarchive it first.",
+      }))),
+      startThread: vi.fn(() => Promise.resolve({ thread: { id: "replacement-thread" }, model: "gpt-test", serviceTier: null })),
+      startTurn,
+      onNotification: vi.fn((listener: (notification: ServerNotification) => void) => {
+        notificationListener = listener;
+        return () => {};
+      }),
+      onFatal: vi.fn(() => () => {}),
+      setServerRequestHandler: vi.fn(() => () => {}),
+    } as unknown as AppServerClient;
+    const store = {
+      getTask: vi.fn(() => task),
+      project: vi.fn(() => project),
+      codexThreadId: vi.fn(() => "archived-thread"),
+      saveThread: vi.fn(),
+      bindTask: vi.fn(),
+      appendTaskEvent: vi.fn(),
+      transitionTask: vi.fn(),
+      dangerLeaseActive: vi.fn(() => false),
+      disarmPlanMode: vi.fn(),
+    } satisfies RuntimeStore;
+    const gateway = {
+      progress: vi.fn(),
+      plan: vi.fn(() => Promise.resolve()),
+      tool: vi.fn(() => Promise.resolve()),
+      final: vi.fn(() => Promise.resolve()),
+      planReady: vi.fn(() => Promise.resolve()),
+      failure: vi.fn(() => Promise.resolve()),
+      artifact: vi.fn(() => Promise.resolve()),
+      requestApproval: () => Promise.resolve("decline" as const),
+      requestInput: vi.fn(() => Promise.resolve({})),
+      cancelTask: vi.fn(),
+    } satisfies InteractiveGateway;
+    const executor = new AppServerTaskExecutor(appServer, store, gateway, pino({ level: "silent" }));
+    const execution = executor.execute(task);
+
+    await vi.waitFor(() => {
+      expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({ threadId: "replacement-thread" }));
+    });
+    notificationListener?.({
+      method: "turn/completed",
+      params: { threadId: "replacement-thread", turn: { id: "turn-replacement", status: "completed" } },
+    });
+
+    await execution;
+    expect(store.saveThread).toHaveBeenCalledWith(project.id, "replacement-thread", project.permissionProfile, "archived-thread");
+    executor.dispose();
+  });
+
   it("本机 Codex 登录失效时向 Telegram 发送可操作的失败提示", async () => {
     const failure = vi.fn(() => Promise.resolve());
     const appServer = {

@@ -9,6 +9,7 @@ import { defaultRuntimePaths, loadConfig, readBotToken } from "./core/config.js"
 import { acquireInstanceLock } from "./core/instance-lock.js";
 import { createLogger } from "./core/logger.js";
 import { errorMessage } from "./core/types.js";
+import { VERSION } from "./core/version.js";
 import { MediaManager } from "./media/manager.js";
 import { AppServerTaskExecutor } from "./orchestrator/app-task-executor.js";
 import { RuntimeStoreAdapter } from "./runtime/store-adapter.js";
@@ -23,8 +24,8 @@ import { TELEGRAM_COMMANDS } from "./telegram/commands.js";
 import { TelegramController, type HealthProvider } from "./telegram/controller.js";
 import { TelegramInteractiveGateway } from "./telegram/gateway.js";
 import { UpdateManager } from "./update/manager.js";
+import { RestartManager } from "./update/restart-manager.js";
 
-const VERSION = "1.1.1";
 process.umask(0o077);
 
 function renderModelCatalogHealth(health: ReturnType<CodexModelStateProvider["health"]>): string {
@@ -156,6 +157,7 @@ async function main(): Promise<void> {
         };
       })(), logger)
     : null;
+  const restarts = new RestartManager({ stateDirectory: config.stateDirectory }, logger);
   const controller = new TelegramController(
     telegram,
     database,
@@ -174,6 +176,7 @@ async function main(): Promise<void> {
     updates,
     config,
     logger,
+    restarts,
   );
   void controller.resumePendingUpdateNotifications().catch((error: unknown) => {
     logger.error({ error: errorMessage(error) }, "恢复更新终态通知失败；动作文件已保留供下次启动重试");
@@ -218,6 +221,7 @@ async function main(): Promise<void> {
           try {
             await controller.handle(update);
             settings.set("telegram_offset", String(update.update_id + 1));
+            await controller.launchRestartAfterUpdateCommitted(update.update_id);
           } catch (error) {
             logger.error({ updateId: update.update_id, error: errorMessage(error) }, "Telegram update 处理失败");
           }

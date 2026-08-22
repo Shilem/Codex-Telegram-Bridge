@@ -6,6 +6,7 @@ import Sqlite from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { BridgeDatabase } from "../../src/storage/database.js";
+import { RuntimeStoreAdapter } from "../../src/runtime/store-adapter.js";
 import { migrations } from "../../src/storage/schema.js";
 import { TaskLedger } from "../../src/storage/tasks.js";
 import { ThreadRepository } from "../../src/storage/threads.js";
@@ -32,6 +33,24 @@ afterEach(() => {
 });
 
 describe("BridgeDatabase", () => {
+  it("替代归档会话时关闭旧活跃会话", () => {
+    const db = database();
+    addProject(db);
+    const store = new RuntimeStoreAdapter(db);
+
+    store.saveThread("project-1", "archived-thread", "workspace-write + on-request");
+    store.saveThread("project-1", "replacement-thread", "workspace-write + on-request", "archived-thread");
+
+    const rows = db.connection
+      .prepare("SELECT codex_thread_id, closed_at FROM threads WHERE project_id = ? ORDER BY codex_thread_id")
+      .all("project-1") as Array<{ codex_thread_id: string; closed_at: number | null }>;
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.codex_thread_id).toBe("archived-thread");
+    expect(typeof rows[0]?.closed_at).toBe("number");
+    expect(rows[1]).toEqual({ codex_thread_id: "replacement-thread", closed_at: null });
+  });
+
   it("enables durable SQLite safety pragmas and applies migrations once", () => {
     const db = database();
     expect(db.connection.pragma("journal_mode", { simple: true })).toBe("memory");

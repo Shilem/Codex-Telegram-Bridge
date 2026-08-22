@@ -27,7 +27,7 @@ jobs:
         env:
           TAG_VERSION: ${{ github.ref_name }}
         run: |
-          node -e 'const fs=require("fs");const expected=process.env.TAG_VERSION.replace(/^v/,"");const pkg=require("./package.json");const files=["src/service.ts","src/cli.ts"];if(pkg.name!=="@shilem/codex-telegram-bridge"||pkg.version!==expected||files.some(f=>!fs.readFileSync(f,"utf8").includes(`\"${expected}\"`))){throw new Error(`发布元数据不一致 tag=${expected} package=${pkg.name}@${pkg.version}`)}'
+          node -e 'const fs=require("fs");const expected=process.env.TAG_VERSION.replace(/^v/,"");const pkg=require("./package.json");const files=["src/core/version.ts"];if(pkg.name!=="@shilem/codex-telegram-bridge"||pkg.version!==expected||files.some(f=>!fs.readFileSync(f,"utf8").includes(`\"${expected}\"`))){throw new Error(`发布元数据不一致 tag=${expected} package=${pkg.name}@${pkg.version}`)}'
       - run: npm audit --audit-level=high
       - run: npm sbom --sbom-format cyclonedx > codex-telegram-bridge.cdx.json
       - id: pack

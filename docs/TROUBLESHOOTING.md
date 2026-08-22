@@ -30,7 +30,7 @@ Windows：查看 Task Scheduler 中 `CodexTelegramBridge` 的 Last Run Result �
 
 ### Node 版本错误
 
-1.0 固定 Node.js 24 LTS。`node --version` 不是 24 时，安装器和 doctor 会失败，不会静默使用未验证版本。
+当前运行时固定为 Node.js 24 LTS。`node --version` 不是 24 时，安装器和 doctor 会失败，不会静默使用未验证版本。
 
 ### App Server 不可用
 
@@ -38,15 +38,15 @@ Windows：查看 Task Scheduler 中 `CodexTelegramBridge` 的 Last Run Result �
 
 ### Bot 没有响应
 
-确认 Token 文件非空、权限为 0600，并确认没有第二个进程使用同一 Token 执行长轮询。检查日志中的 update ID 与 Telegram API 错误。
+确认 Token 文件非空；Unix 还要确认权限为 0600。确认没有第二个进程使用同一 Token 执行长轮询，再检查日志中的 update ID 与 Telegram API 错误。
 
 ### 任务变为 unknown
 
-这表示进程在提交或运行边界崩溃，系统故意不自动重放。使用 `/tasks` 查看；确认外部副作用后选择 `/retry <id>`、标记完成或取消。
+这表示进程在提交或运行边界崩溃，系统故意不自动重放。使用 `/tasks` 查看；确认没有外部副作用后才选择“安全重试”或 `/retry <id>`，否则取消记录并人工核对实际结果。
 
 ### 附件被拒绝
 
-检查声明大小、Content-Length、实际大小、MIME magic、十分钟上传速率和磁盘空间。服务不会放宽限制后继续执行。
+检查声明大小、Content-Length、实际大小、十分钟上传速率和磁盘空间；图片还要检查 MIME magic 是否与内容一致。服务不会放宽限制后继续执行。
 
 ### 更新失败
 

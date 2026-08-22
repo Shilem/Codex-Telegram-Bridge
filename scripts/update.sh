@@ -76,7 +76,7 @@ restart_service() {
 }
 
 if [ "${CTB_SKIP_SERVICE:-0}" = 1 ]; then
-  ctb_log "测试模式：已切换到 $VERSION，跳过服务健康检查"
+  ctb_log "测试模式：已切换到 ${VERSION}，跳过服务健康检查"
   exit 0
 fi
 restart_service
