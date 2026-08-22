@@ -16,6 +16,7 @@ _Last updated: 2026-08-22_
 - [DONE] #legacy_16b2 Legacy issue: fix: 修复 Telegram 任务生命周期并补齐额度查询 -> fix: 修复 Telegram 任务生命周期并补齐额度查询 (fixed)
 - [DONE] #legacy_056f Legacy issue: fix: 使用作用域 npm 包并固化签名更新源 -> fix: 使用作用域 npm 包并固化签名更新源 (fixed)
 - [DONE] #legacy_0013 Legacy issue: Merge pull request #3 from Shilem/fix/npm-trusted-publishing -> Merge pull request #3 from Shilem/fix/npm-trusted-publishing (fixed)
+- [DONE] #0052 Linux /update worker 未继承 XDG_RUNTIME_DIR 与 DBUS_SESSION_BUS_ADDRESS，安装完成后 systemctl --user restart 无法连接 user bus，导致更新失败。VPS journal 已复现：Failed to connect to user scope bus。 [src/update/manager.ts:#workerEnvironment] -> #0052 已修复：Linux /update 独立 worker 保留 user systemd bus 环境，安装后可安全重启服务。 [79 项测试、审计与分发测试通过] (fixed)
 - [DONE] #0051 Telegram /version 仍硬编码输出 1.0.0，而发布元数据已为 1.1.2；发布后用户会看到错误版本。 [src/telegram/controller.ts:414] -> #0051 已修复：/version 和所有运行入口引用共享版本常量，避免发布版本漂移。 [完整测试与分发校验通过] (fixed)
 - [DONE] #0050 重启动作在 Telegram update 未提交时崩溃会遗留 pending；恢复流程跳过它但 request 仍将其视为活跃，导致后续 /restart 永久被拒绝。应终态化未落账动作并通知。 [src/telegram/controller.ts:138] -> #0050 已修复：重启动作仅在 Telegram update 已提交后启动，恢复时取消未落账动作。 [完整测试与分发校验通过] (fixed)
   - Failed attempt: 为未落账重启动作新增终态化接口后，既有恢复测试 mock 未实现 RestartProvider.cancelUncommitted，TypeScript 类型检查失败；需补齐接口 mock。 [test/telegram/restart-notification.test.ts:38]

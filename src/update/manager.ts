@@ -227,7 +227,7 @@ export class UpdateManager {
   }
 
   #workerEnvironment(): Record<string, string> {
-    const inheritedKeys = ["HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP", "SystemRoot", "WINDIR", "COMSPEC", "APPDATA", "LOCALAPPDATA"];
+    const inheritedKeys = ["HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP", "SystemRoot", "WINDIR", "COMSPEC", "APPDATA", "LOCALAPPDATA", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"];
     const inherited = Object.fromEntries(inheritedKeys.flatMap((key) => process.env[key] ? [[key, process.env[key]]] : []));
     const systemPath = process.env.PATH ?? process.env.Path ?? "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
     const path = [dirname(this.runtime.nodeExecutable), dirname(this.config.codexExecutable), systemPath].join(delimiter);

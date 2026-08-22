@@ -30,6 +30,7 @@ const directories: string[] = [];
 
 afterEach(async () => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -65,6 +66,8 @@ describe("UpdateManager", () => {
     const manifest = Buffer.from(JSON.stringify({ version: "1.1.0", archive: "release.tgz", sha256: "a".repeat(64) }));
     const signature = sign("sha256", manifest, privateKey);
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(new Response(url.endsWith(".sig") ? signature : manifest, { status: 200 }))));
+    vi.stubEnv("XDG_RUNTIME_DIR", "/run/user/1001");
+    vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1001/bus");
     const launched: Array<{ command: string; args: readonly string[] }> = [];
     const spawnProcess = ((command: string, args: readonly string[]) => {
       launched.push({ command, args });
@@ -89,6 +92,8 @@ describe("UpdateManager", () => {
       CTB_INSTALL_ROOT: join(directory, "install"),
       CTB_CONFIG_FILE: join(directory, "config", "config.json"),
       CTB_STATE_DIR: join(directory, "state"),
+      XDG_RUNTIME_DIR: "/run/user/1001",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1001/bus",
     });
     await expect(manager.pendingActions()).resolves.toEqual([expect.objectContaining({
       actionId: action.actionId,
